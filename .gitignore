@@ -10,3 +10,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# OAI build artifacts
+openairinterface5g/cmake_targets/ran_build/build/
+openairinterface5g/cmake_targets/ran_build/build/**
