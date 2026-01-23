@@ -1,0 +1,133 @@
+diff --git a/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c b/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
+index 13f2eca955..25ecb7cc0c 100644
+--- a/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
++++ b/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
+@@ -4788,11 +4788,44 @@ void compute_csi_bitlen(const NR_CSI_MeasConfig_t *csi_MeasConfig, nr_csi_report
+           AssertFatal(1 == 0, "Not yet supported CSI report quantity type");
+       }
+     }
++#ifdef FORCE_RTD_CSI_BITMAP
++    // RTD Test Mode: Force fixed bitlen values to match RTD decoder expectations
++    // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits total
++    // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++    if (csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI
++        || csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_CQI) {
++      csi_report->csi_meas_bitlen.cri_bitlen = 0;  // CRI not included in RTD format
++      csi_report->csi_meas_bitlen.ri_bitlen = 2;   // Fixed 2 bits for RI (4 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[0] = 4; // Fixed 4 bits for CQI (16 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[1] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[2] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[3] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[4] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[5] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[6] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[7] = 4;
++      // PMI bitlen: PMI_i11 = 4 bits, PMI_i2 = 2 bits (total 6 bits)
++      // Note: pmi_x1_bitlen corresponds to PMI_i11, pmi_x2_bitlen corresponds to PMI_i2
++      for (int i = 0; i < 8; i++) {
++        csi_report->csi_meas_bitlen.pmi_x1_bitlen[i] = 4;  // PMI_i11: 4 bits (16 candidates)
++        csi_report->csi_meas_bitlen.pmi_x2_bitlen[i] = 2;  // PMI_i2: 2 bits (4 candidates)
++        csi_report->csi_meas_bitlen.li_bitlen[i] = 0;      // LI not in RTD format
++      }
++      LOG_D(NR_MAC, "[RTD_TEST_MODE] Forced CSI bitlen: CRI=0, RI=2, PMI_i11=4, PMI_i2=2, CQI=4, Total=13 bits\n");
++    }
++#endif
+   }
+ }
+ 
+ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+ {
++#ifdef FORCE_RTD_CSI_BITMAP
++  // RTD Test Mode: Force fixed 13-bit format
++  // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++  // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++  LOG_D(NR_MAC, "[RTD_TEST_MODE] Forcing CSI Part-1 bitlen to 13 bits\n");
++  return 13;
++#else
+   uint16_t csi_bitlen = 0;
+   uint16_t max_bitlen = 0;
+   L1_Meas_bitlen_t *CSI_report_bitlen = NULL;
+@@ -4825,6 +4858,7 @@ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+     csi_bitlen += max_bitlen;
+   }
+   return csi_bitlen;
++#endif
+ }
+ 
+ bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, long *support_90mhz)
+diff --git a/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c b/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
+index aeb15fe864..fd40776165 100644
+--- a/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
++++ b/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
+@@ -3027,6 +3027,63 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+           int cqi_bitlen = csi_report->csi_meas_bitlen.cqi_bitlen[mac->csirs_measurements.ri];
+           int padding_bitlen = 0;
+           // TODO: Improvements will be needed to cri_bitlen>0 and pmi_x1_bitlen>0
++#ifdef FORCE_RTD_CSI_BITMAP
++          // RTD Test Mode: Force fixed 13-bit format matching RTD decoder expectations
++          // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++          // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++          if (mapping_type == ON_PUSCH) {
++            // ON_PUSCH mode: keep original logic
++            p1_bits = cri_bitlen + ri_bitlen + cqi_bitlen;
++            p2_bits = pmi_x1_bitlen + pmi_x2_bitlen;
++            temp_payload_1 = (0/*mac->csi_measurements.cri*/ << (cqi_bitlen + ri_bitlen)) |
++                             (mac->csirs_measurements.ri << cqi_bitlen) |
++                             (mac->csirs_measurements.cqi);
++            temp_payload_2 = (mac->csirs_measurements.i1 << pmi_x2_bitlen) |
++                             mac->csirs_measurements.i2;
++          }
++          else {
++            // PUCCH mode: RTD fixed format
++            p1_bits = 13;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(2) + CQI(4) + PAD(1)
++            p2_bits = 0;   // Part-2 not used in RTD format
++            
++            // Extract and mask PMI values to fit RTD format
++            // PMI_i11 (i1) should be 4 bits, PMI_i2 should be 2 bits
++            uint8_t ri_val = mac->csirs_measurements.ri & 0x3;        // RI: 2 bits (mask to 4 candidates)
++            uint8_t pmi_i11_val = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
++            uint8_t pmi_i2_val = mac->csirs_measurements.i2 & 0x3;   // PMI_i2: 2 bits (mask to 4 candidates)
++            uint8_t cqi_val = mac->csirs_measurements.cqi & 0xF;     // CQI: 4 bits (mask to 16 candidates)
++            uint8_t pad_val = 0;                                      // Padding: 1 bit, fixed to 0
++            
++            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1)
++            // Direct packing without reverse_bits (RTD expects this exact order)
++            temp_payload_1 = ((uint64_t)ri_val << 11) |      // RI at bits [12:11]
++                             ((uint64_t)pmi_i11_val << 7) |  // PMI_i11 at bits [10:7]
++                             ((uint64_t)pmi_i2_val << 5) |   // PMI_i2 at bits [6:5]
++                             ((uint64_t)cqi_val << 1) |      // CQI at bits [4:1]
++                             ((uint64_t)pad_val);            // PAD at bit [0]
++            
++            temp_payload_2 = 0;
++            
++            // RTD mode: DO NOT apply reverse_bits (RTD expects direct bit order)
++            // Log detailed information for RTD validation
++            LOG_D(NR_MAC, "[RTD_TEST_MODE] CSI Part-1 Payload (13 bits fixed format):\n");
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   RI (2 bits) = %d (0x%x)\n", ri_val, ri_val);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PMI_i11 (4 bits) = %d (0x%x), original i1 = %d\n", pmi_i11_val, pmi_i11_val, mac->csirs_measurements.i1);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PMI_i2 (2 bits) = %d (0x%x), original i2 = %d\n", pmi_i2_val, pmi_i2_val, mac->csirs_measurements.i2);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   CQI (4 bits) = %d (0x%x)\n", cqi_val, cqi_val);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PAD (1 bit) = %d\n", pad_val);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Final payload (hex) = 0x%lx\n", temp_payload_1);
++            // Print bit string representation
++            char bit_str[14] = {0};
++            for (int i = 12; i >= 0; i--) {
++              bit_str[12-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
++            }
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Bit order: NO reverse_bits applied (RTD direct format)\n");
++            LOG_D(NR_MAC, "[RTD_TEST_MODE]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
++          }
++#else
++          // Original OAI logic (standard compliant)
+           if (mapping_type == ON_PUSCH) {
+             p1_bits = cri_bitlen + ri_bitlen + cqi_bitlen;
+             p2_bits = pmi_x1_bitlen + pmi_x2_bitlen;
+@@ -3048,6 +3105,7 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+ 
+           temp_payload_1 = reverse_bits(temp_payload_1, p1_bits);
+           temp_payload_2 = reverse_bits(temp_payload_2, p2_bits);
++#endif
+           LOG_D(NR_MAC, "cri_bitlen = %d\n", cri_bitlen);
+           LOG_D(NR_MAC, "ri_bitlen = %d\n", ri_bitlen);
+           LOG_D(NR_MAC, "pmi_x1_bitlen = %d\n", pmi_x1_bitlen);

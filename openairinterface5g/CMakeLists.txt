@@ -277,6 +277,8 @@ add_boolean_option(T_TRACER            ON  "Activate the T tracer, a debugging/m
 add_boolean_option(ENABLE_LTTNG        OFF "Activate the LTTNG tracer, a debugging/monitoring framework" ON)
 add_boolean_option(UE_DEBUG_TRACE      OFF "Activate UE debug trace" ON)
 add_boolean_option(UE_TIMING_TRACE     OFF "Activate UE timing trace" ON)
+add_boolean_option(RTD_MATCH_LOG        OFF "Enable RTD matching logs for CSI UCI payload debugging" ON)
+add_boolean_option(RTD_MATCH_LOG_ACK   OFF "Enable detailed ACK/SR/CSI breakdown in RTD matching logs" ON)
 
 add_boolean_option(TRACY_ENABLE OFF "Enable tracy instrumentation" ON)
 if (TRACY_ENABLE)
@@ -1002,6 +1004,7 @@ set(PHY_SRC_UE
   ${OPENAIR1_DIR}/PHY/NR_UE_ESTIMATION/nr_adjust_synch_ue.c
   ${OPENAIR1_DIR}/PHY/NR_UE_ESTIMATION/nr_ue_measurements.c
   ${OPENAIR1_DIR}/PHY/NR_UE_ESTIMATION/nr_adjust_gain.c
+  ${OPENAIR1_DIR}/PHY/NR_UE_ESTIMATION/dl_csi_onnx.c
   ${OPENAIR1_DIR}/PHY/TOOLS/file_output.c
   ${OPENAIR1_DIR}/PHY/TOOLS/log2_approx.c
   ${OPENAIR1_DIR}/PHY/TOOLS/cdot_prod.c
@@ -1051,7 +1054,34 @@ add_library(PHY_NR_NO_AVX_256 ${PHY_NR_SRC})
 target_link_libraries(PHY_NR_NO_AVX_256 nr_phy_common nr_common)
 target_compile_definitions(PHY_NR_NO_AVX_256 PUBLIC USE_128BIT)
 
+# ONNX Runtime 지원 옵션
+option(ENABLE_DL_CSI_ONNX "Enable DL CSI ONNX path" ON)
+
 add_library(PHY_NR_UE ${PHY_NR_UE_SRC})
+if(ENABLE_DL_CSI_ONNX)
+  target_compile_definitions(PHY_NR_UE PRIVATE DL_CSI_ONNX)
+endif()
+
+# ONNX Runtime 링크 설정
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to onnxruntime (contains include/ and lib/)")
+
+# ONNX Runtime 기본 경로 (Project_onnx잘됨과 동일)
+if(ENABLE_DL_CSI_ONNX)
+  # 기본 경로가 없으면 /opt/onnxruntime 사용
+  if(NOT ONNXRUNTIME_ROOT)
+    set(ONNXRUNTIME_ROOT "/opt/onnxruntime")
+  endif()
+  
+  # ONNX Runtime 링크 디렉토리 추가
+  link_directories(${ONNXRUNTIME_ROOT}/lib)
+  
+  # ONNX Runtime 사용 시 컴파일 정의 및 링크 설정
+  target_compile_definitions(PHY_NR_UE PRIVATE OAI_USE_ONNXRUNTIME)
+  target_include_directories(PHY_NR_UE PRIVATE ${ONNXRUNTIME_ROOT}/include)
+  target_link_libraries(PHY_NR_UE PRIVATE onnxruntime)
+  set_target_properties(PHY_NR_UE PROPERTIES BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib")
+endif()
+
 target_link_libraries(PHY_NR_UE PRIVATE asn1_nr_rrc_hdrs nr_phy_common nr_common UTIL)
 
 add_library(PHY_RU ${PHY_SRC_RU})
@@ -1884,6 +1914,13 @@ target_link_libraries(nr-uesoftmodem PRIVATE pthread m CONFIG_LIB rt nr_ue_phy_m
 target_link_libraries(nr-uesoftmodem PRIVATE ${T_LIB})
 target_link_libraries(nr-uesoftmodem PRIVATE nr_nas lib_uicc usim_lib)
 target_link_libraries(nr-uesoftmodem PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
+add_dependencies(nr-uesoftmodem oai_iqplayer)
+if (RTD_MATCH_LOG)
+  target_compile_definitions(nr-uesoftmodem PRIVATE RTD_MATCH_LOG)
+endif()
+if (RTD_MATCH_LOG_ACK)
+  target_compile_definitions(nr-uesoftmodem PRIVATE RTD_MATCH_LOG_ACK)
+endif()
 
 # force the generation of ASN.1 so that we don't need to wait during the build
 target_link_libraries(nr-uesoftmodem PRIVATE

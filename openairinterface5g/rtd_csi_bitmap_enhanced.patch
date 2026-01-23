@@ -1,0 +1,360 @@
+diff --git a/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c b/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
+index 13f2eca955..25ecb7cc0c 100644
+--- a/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
++++ b/openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
+@@ -4788,11 +4788,44 @@ void compute_csi_bitlen(const NR_CSI_MeasConfig_t *csi_MeasConfig, nr_csi_report
+           AssertFatal(1 == 0, "Not yet supported CSI report quantity type");
+       }
+     }
++#ifdef FORCE_RTD_CSI_BITMAP
++    // RTD Test Mode: Force fixed bitlen values to match RTD decoder expectations
++    // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits total
++    // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++    if (csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI
++        || csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_CQI) {
++      csi_report->csi_meas_bitlen.cri_bitlen = 0;  // CRI not included in RTD format
++      csi_report->csi_meas_bitlen.ri_bitlen = 2;   // Fixed 2 bits for RI (4 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[0] = 4; // Fixed 4 bits for CQI (16 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[1] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[2] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[3] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[4] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[5] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[6] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[7] = 4;
++      // PMI bitlen: PMI_i11 = 4 bits, PMI_i2 = 2 bits (total 6 bits)
++      // Note: pmi_x1_bitlen corresponds to PMI_i11, pmi_x2_bitlen corresponds to PMI_i2
++      for (int i = 0; i < 8; i++) {
++        csi_report->csi_meas_bitlen.pmi_x1_bitlen[i] = 4;  // PMI_i11: 4 bits (16 candidates)
++        csi_report->csi_meas_bitlen.pmi_x2_bitlen[i] = 2;  // PMI_i2: 2 bits (4 candidates)
++        csi_report->csi_meas_bitlen.li_bitlen[i] = 0;      // LI not in RTD format
++      }
++      LOG_D(NR_MAC, "[RTD_TEST_MODE] Forced CSI bitlen: CRI=0, RI=2, PMI_i11=4, PMI_i2=2, CQI=4, Total=13 bits\n");
++    }
++#endif
+   }
+ }
+ 
+ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+ {
++#ifdef FORCE_RTD_CSI_BITMAP
++  // RTD Test Mode: Force fixed 13-bit format
++  // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++  // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++  LOG_D(NR_MAC, "[RTD_TEST_MODE] Forcing CSI Part-1 bitlen to 13 bits\n");
++  return 13;
++#else
+   uint16_t csi_bitlen = 0;
+   uint16_t max_bitlen = 0;
+   L1_Meas_bitlen_t *CSI_report_bitlen = NULL;
+@@ -4825,6 +4858,7 @@ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+     csi_bitlen += max_bitlen;
+   }
+   return csi_bitlen;
++#endif
+ }
+ 
+ bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, long *support_90mhz)
+diff --git a/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c b/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
+index aeb15fe864..3a72c6a2d5 100644
+--- a/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
++++ b/openair2/LAYER2/NR_MAC_UE/nr_ue_procedures.c
+@@ -1740,7 +1740,48 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
+                                                      2,
+                                                      pucchres->format.choice.format2->nrofSymbols,
+                                                      8);
++#ifdef FORCE_RTD_CSI_BITMAP
++        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
++        // Calculate offsets for RTD parsing
++        int csi_offset = pucch->n_harq + pucch->n_sr;  // CSI starts after ACK and SR
++        int total_bits = pucch->n_csi + pucch->n_harq + pucch->n_sr;
++        int csi_msb = total_bits - 1;
++        int csi_lsb = total_bits - pucch->n_csi;
++        
++        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format2 Payload Assembly:\n");
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
++              pucch->n_harq, pucch->n_sr, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Shift offsets: CSI << %d, SR << %d\n", csi_offset, pucch->n_harq);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position in final payload: bits [%d:%d] (offset=%d)\n", 
++              csi_msb, csi_lsb, csi_offset);
++#endif
+         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
++#ifdef FORCE_RTD_CSI_BITMAP
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", pucch_pdu->payload);
++        // Print bit string for entire payload
++        char pucch_bit_str[128] = {0};
++        int total_bits_log = pucch->n_csi + pucch->n_harq + pucch->n_sr;
++        for (int i = total_bits_log - 1; i >= 0; i--) {
++          pucch_bit_str[total_bits_log - 1 - i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
++        }
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload (binary, MSB→LSB, %d bits): %s\n", total_bits_log, pucch_bit_str);
++        // Extract and print CSI bits only (for RTD parsing)
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI bits in final payload (bits [%d:%d], offset=%d): ", 
++              csi_msb, csi_lsb, csi_offset);
++        char csi_bit_str[14] = {0};
++        for (int i = csi_msb; i >= csi_lsb; i--) {
++          char bit_char = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
++          csi_bit_str[csi_msb - i] = bit_char;
++          LOG_I(NR_MAC, "%c", bit_char);
++        }
++        LOG_I(NR_MAC, "\n");
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only binary string (for RTD): %s\n", csi_bit_str);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
++              (pucch_pdu->payload >> csi_offset) & ((1UL << pucch->n_csi) - 1));
++#endif
+         break;
+       case NR_PUCCH_Resource__format_PR_format3 :
+         pucch_pdu->format_type = 3;
+@@ -1775,6 +1816,23 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
+                                                      2 - pucch_pdu->pi_2bpsk,
+                                                      pucchres->format.choice.format3->nrofSymbols - f3_dmrs_symbols,
+                                                      12);
++#ifdef FORCE_RTD_CSI_BITMAP
++        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
++        int csi_offset_f3 = pucch->n_harq + pucch->n_sr;
++        int total_bits_f3 = pucch->n_csi + pucch->n_harq + pucch->n_sr;
++        uint64_t final_payload_f3 = (pucch->csi_part1_payload << csi_offset_f3) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
++        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format3 Payload Assembly:\n");
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
++              pucch->n_harq, pucch->n_sr, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position: bits [%d:%d] (offset=%d)\n", 
++              total_bits_f3 - 1, total_bits_f3 - pucch->n_csi, csi_offset_f3);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", final_payload_f3);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
++              (final_payload_f3 >> csi_offset_f3) & ((1UL << pucch->n_csi) - 1));
++#endif
+         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
+         break;
+       case NR_PUCCH_Resource__format_PR_format4 :
+@@ -1793,6 +1851,23 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
+           pucch_pdu->pi_2bpsk = pucchfmt->pi2BPSK!= NULL ?  1 : 0;
+           pucch_pdu->add_dmrs_flag = pucchfmt->additionalDMRS!= NULL ?  1 : 0;
+         }
++#ifdef FORCE_RTD_CSI_BITMAP
++        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
++        int csi_offset_f4 = pucch->n_harq + pucch->n_sr;
++        int total_bits_f4 = pucch->n_csi + pucch->n_harq + pucch->n_sr;
++        uint64_t final_payload_f4 = (pucch->csi_part1_payload << csi_offset_f4) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
++        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format4 Payload Assembly:\n");
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
++              pucch->n_harq, pucch->n_sr, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position: bits [%d:%d] (offset=%d)\n", 
++              total_bits_f4 - 1, total_bits_f4 - pucch->n_csi, csi_offset_f4);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", final_payload_f4);
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
++              (final_payload_f4 >> csi_offset_f4) & ((1UL << pucch->n_csi) - 1));
++#endif
+         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
+         break;
+       default :
+@@ -3003,6 +3078,78 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+   uint64_t temp_payload_2 = 0;
+   AssertFatal(mapping_type != SUBBAND_ON_PUCCH, "CSI mapping for subband PMI and CQI not implemented\n");
+ 
++#ifdef FORCE_RTD_CSI_BITMAP
++  // RTD Test Mode: Configuration-based sanity check
++  // Verify that the configuration matches RTD expectations
++  static bool rtd_sanity_check_done = false;
++  if (!rtd_sanity_check_done) {
++    bool config_ok = true;
++    LOG_I(NR_MAC, "[RTD_TEST_MODE] Configuration Sanity Check:\n");
++    
++    // Check reportQuantity
++    if (csi_reportconfig->reportQuantity.present != NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI) {
++      LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: reportQuantity is not cri_RI_PMI_CQI (got %d)\n", 
++            csi_reportconfig->reportQuantity.present);
++      config_ok = false;
++    } else {
++      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ reportQuantity: cri_RI_PMI_CQI\n");
++    }
++    
++    // Check reportConfigType (should be periodic for PUCCH)
++    if (csi_reportconfig->reportConfigType.present != NR_CSI_ReportConfig__reportConfigType_PR_periodic) {
++      LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: reportConfigType is not periodic (got %d)\n", 
++            csi_reportconfig->reportConfigType.present);
++      config_ok = false;
++    } else {
++      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ reportConfigType: periodic\n");
++    }
++    
++    // Check CRI bitlen (should be 0 for single resource)
++    nr_csi_report_t *csi_report_check = NULL;
++    for (int i = 0; i < MAX_CSI_REPORTCONFIG; i++) {
++      if (mac->csi_report_template[i].reportConfigId == csi_reportconfig->reportConfigId) {
++        csi_report_check = &mac->csi_report_template[i];
++        break;
++      }
++    }
++    if (csi_report_check) {
++      if (csi_report_check->csi_meas_bitlen.cri_bitlen != 0) {
++        LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: CRI bitlen is %d (expected 0 for RTD format)\n", 
++              csi_report_check->csi_meas_bitlen.cri_bitlen);
++        config_ok = false;
++      } else {
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ CRI bitlen: 0 (single resource)\n");
++      }
++      
++      // Check RI bitlen (should be 2 in RTD mode)
++      if (csi_report_check->csi_meas_bitlen.ri_bitlen != 2) {
++        LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: RI bitlen is %d (expected 2 in RTD mode)\n", 
++              csi_report_check->csi_meas_bitlen.ri_bitlen);
++      } else {
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ RI bitlen: 2\n");
++      }
++    }
++    
++    // Check PUCCH resource (if available in config)
++    if (csi_reportconfig->reportConfigType.present == NR_CSI_ReportConfig__reportConfigType_PR_periodic) {
++      if (csi_reportconfig->reportConfigType.choice.periodic && 
++          csi_reportconfig->reportConfigType.choice.periodic->pucch_CSI_ResourceList.list.count > 0) {
++        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ PUCCH CSI Resource List: %d entries\n", 
++              csi_reportconfig->reportConfigType.choice.periodic->pucch_CSI_ResourceList.list.count);
++        // Note: PUCCH resource format verification would require access to PUCCH config,
++        // which is not directly available here. This is logged for reference.
++      }
++    }
++    
++    if (config_ok) {
++      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ Configuration check PASSED\n");
++    } else {
++      LOG_W(NR_MAC, "[RTD_TEST_MODE]   ⚠ Configuration check found warnings (RTD mode may not work correctly)\n");
++    }
++    rtd_sanity_check_done = true;
++  }
++#endif
++
+   for (int csi_resourceidx = 0; csi_resourceidx < csi_MeasConfig->csi_ResourceConfigToAddModList->list.count; csi_resourceidx++) {
+ 
+     struct NR_CSI_ResourceConfig *csi_resourceconfig = csi_MeasConfig->csi_ResourceConfigToAddModList->list.array[csi_resourceidx];
+@@ -3027,6 +3174,114 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+           int cqi_bitlen = csi_report->csi_meas_bitlen.cqi_bitlen[mac->csirs_measurements.ri];
+           int padding_bitlen = 0;
+           // TODO: Improvements will be needed to cri_bitlen>0 and pmi_x1_bitlen>0
++#ifdef FORCE_RTD_CSI_BITMAP
++          // RTD Test Mode: Force fixed 13-bit format matching RTD decoder expectations
++          // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++          // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++          if (mapping_type == ON_PUSCH) {
++            // ON_PUSCH mode: keep original logic
++            p1_bits = cri_bitlen + ri_bitlen + cqi_bitlen;
++            p2_bits = pmi_x1_bitlen + pmi_x2_bitlen;
++            temp_payload_1 = (0/*mac->csi_measurements.cri*/ << (cqi_bitlen + ri_bitlen)) |
++                             (mac->csirs_measurements.ri << cqi_bitlen) |
++                             (mac->csirs_measurements.cqi);
++            temp_payload_2 = (mac->csirs_measurements.i1 << pmi_x2_bitlen) |
++                             mac->csirs_measurements.i2;
++          }
++          else {
++            // PUCCH mode: RTD fixed format
++            // RTD Test Mode: Force fixed 13-bit format matching RTD decoder expectations
++            // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++            // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++            p1_bits = 13;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(2) + CQI(4) + PAD(1)
++            p2_bits = 0;   // Part-2 not used in RTD format
++            
++            // ===== RI Encoding =====
++            // OAI stores RI as 0-based (0=rank1, 1=rank2, 2=rank3, 3=rank4)
++            // RTD may expect either rank value (1-4) or rank-1 (0-3)
++            uint8_t ri_raw = mac->csirs_measurements.ri;  // 0-based rank index
++            uint8_t ri_val;
++#ifdef FORCE_RTD_RI_ENC_RANK
++            // RTD expects rank value (1-4)
++            ri_val = (ri_raw + 1) & 0x3;  // Convert to rank (1-4), then mask to 2 bits
++            // Note: rank 4 would be encoded as 0, but should be 3 (max for 2 bits)
++            if (ri_raw >= 3) ri_val = 3;  // Cap at 3 (rank 4 → encoded as 3)
++#else
++            // Default: RTD expects rank-1 (0-3), which matches OAI's 0-based storage
++            ri_val = ri_raw & 0x3;  // RI: 2 bits (mask to 4 candidates: 0,1,2,3)
++#endif
++            
++            // ===== PMI Encoding =====
++            // OAI stores i1 as combined value (may include i11, i12, i13)
++            // RTD expects only i11 (4 bits) and i2 (2 bits)
++            uint8_t pmi_i11_val;
++            uint8_t pmi_i2_val;
++#ifdef FORCE_RTD_PMI_ZERO
++            // Force zero mode (for decoder boundary validation)
++            pmi_i11_val = 0;
++            pmi_i2_val = 0;
++#else
++            // Default: Masking reduction mode (observe value variations)
++            // Extract lower 4 bits of i1 as i11 (RTD assumes i11 is 4 bits)
++            pmi_i11_val = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
++            pmi_i2_val = mac->csirs_measurements.i2 & 0x3;    // PMI_i2: 2 bits (mask to 4 candidates)
++#endif
++            
++            // ===== CQI Encoding =====
++            uint8_t cqi_val = mac->csirs_measurements.cqi & 0xF;  // CQI: 4 bits (mask to 16 candidates)
++            
++            // ===== Padding =====
++            uint8_t pad_val = 0;  // Padding: 1 bit, fixed to 0
++            
++            // ===== Payload Packing =====
++            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1)
++            temp_payload_1 = ((uint64_t)ri_val << 11) |      // RI at bits [12:11]
++                             ((uint64_t)pmi_i11_val << 7) |  // PMI_i11 at bits [10:7]
++                             ((uint64_t)pmi_i2_val << 5) |   // PMI_i2 at bits [6:5]
++                             ((uint64_t)cqi_val << 1) |      // CQI at bits [4:1]
++                             ((uint64_t)pad_val);            // PAD at bit [0]
++            
++            temp_payload_2 = 0;
++            
++            // ===== Bit Order Handling =====
++#ifdef FORCE_RTD_WITH_REVERSE
++            // Apply reverse_bits (if RTD expects reversed order)
++            temp_payload_1 = reverse_bits(temp_payload_1, p1_bits);
++            temp_payload_2 = reverse_bits(temp_payload_2, p2_bits);
++#endif
++            // Default: NO reverse_bits (RTD expects direct bit order)
++            
++            // ===== Detailed Logging =====
++            LOG_I(NR_MAC, "[RTD_TEST_MODE] CSI Part-1 Payload (13 bits fixed format):\n");
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original RI (0-based) = %d, Encoded RI (2 bits) = %d (0x%x)\n", 
++                  ri_raw, ri_val, ri_val);
++#ifdef FORCE_RTD_RI_ENC_RANK
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK (1-4)\n");
++#else
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK_MINUS1 (0-3)\n");
++#endif
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i1 = %d, Encoded PMI_i11 (4 bits) = %d (0x%x)\n", 
++                  mac->csirs_measurements.i1, pmi_i11_val, pmi_i11_val);
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i2 = %d, Encoded PMI_i2 (2 bits) = %d (0x%x)\n", 
++                  mac->csirs_measurements.i2, pmi_i2_val, pmi_i2_val);
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   CQI (4 bits) = %d (0x%x)\n", cqi_val, cqi_val);
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   PAD (1 bit) = %d\n", pad_val);
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (hex) = 0x%lx\n", temp_payload_1);
++            // Print bit string representation
++            char bit_str[14] = {0};
++            for (int i = 12; i >= 0; i--) {
++              bit_str[12-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
++            }
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
++#ifdef FORCE_RTD_WITH_REVERSE
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: WITH reverse_bits applied\n");
++#else
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: NO reverse_bits applied (RTD direct format)\n");
++#endif
++            LOG_I(NR_MAC, "[RTD_TEST_MODE]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
++          }
++#else
++          // Original OAI logic (standard compliant)
+           if (mapping_type == ON_PUSCH) {
+             p1_bits = cri_bitlen + ri_bitlen + cqi_bitlen;
+             p2_bits = pmi_x1_bitlen + pmi_x2_bitlen;
+@@ -3048,6 +3303,7 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+ 
+           temp_payload_1 = reverse_bits(temp_payload_1, p1_bits);
+           temp_payload_2 = reverse_bits(temp_payload_2, p2_bits);
++#endif
+           LOG_D(NR_MAC, "cri_bitlen = %d\n", cri_bitlen);
+           LOG_D(NR_MAC, "ri_bitlen = %d\n", ri_bitlen);
+           LOG_D(NR_MAC, "pmi_x1_bitlen = %d\n", pmi_x1_bitlen);

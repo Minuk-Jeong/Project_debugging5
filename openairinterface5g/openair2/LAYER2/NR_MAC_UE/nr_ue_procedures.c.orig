@@ -33,10 +33,6 @@
 
 #include <stdio.h>
 #include <math.h>
-#include <time.h>
-#ifdef RTD_MATCH_LOG
-#include <stdint.h>
-#endif
 
 /* exe */
 #include "executables/nr-softmodem.h"
@@ -59,10 +55,6 @@
 #include "common/utils/LOG/log.h"
 #include "common/utils/LOG/vcd_signal_dumper.h"
 #include "LAYER2/nr_rlc/nr_rlc_oai_api.h"
-
-#ifdef RTD_MATCH_LOG
-#include <stdint.h>
-#endif
 
 // #define DEBUG_MIB
 // #define ENABLE_MAC_PAYLOAD_DEBUG 1
@@ -133,24 +125,6 @@ static void nr_ue_process_rar(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *d
           If the max number of retransmissions is reached, it triggers a new RA  */
 static int8_t nr_ue_get_SR(NR_UE_MAC_INST_t *mac, frame_t frame, slot_t slot, NR_SchedulingRequestId_t sr_id);
 
-static csi_payload_t get_ssb_rsrp_payload(NR_UE_MAC_INST_t *mac,
-                                          struct NR_CSI_ReportConfig *csi_reportconfig,
-                                          NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
-                                          NR_CSI_MeasConfig_t *csi_MeasConfig);
-
-static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
-                                                  struct NR_CSI_ReportConfig *csi_reportconfig,
-                                                  NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
-                                                  NR_CSI_MeasConfig_t *csi_MeasConfig,
-                                                  CSI_mapping_t mapping_type);
-static csi_payload_t get_csirs_RSRP_payload(NR_UE_MAC_INST_t *mac,
-                                            struct NR_CSI_ReportConfig *csi_reportconfig,
-                                            NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
-                                            const NR_CSI_MeasConfig_t *csi_MeasConfig);
-
-static uint8_t get_rsrp_diff_index(int best_rsrp, int current_rsrp);
-
-#ifdef RTD_MATCH_LOG
 /*! \fn void get_wallclock_str(char *buf, size_t len);
    \brief Get wall-clock time string in HH:MM:SS.mmm format (thread-safe)
    \param buf Output buffer for time string
@@ -209,7 +183,23 @@ static void get_bitstring_lsb(char *buf, size_t len, uint64_t val, int nbits)
   buf[nbits] = '\0';
 }
 #endif
-#endif
+
+static csi_payload_t get_ssb_rsrp_payload(NR_UE_MAC_INST_t *mac,
+                                          struct NR_CSI_ReportConfig *csi_reportconfig,
+                                          NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
+                                          NR_CSI_MeasConfig_t *csi_MeasConfig);
+
+static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
+                                                  struct NR_CSI_ReportConfig *csi_reportconfig,
+                                                  NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
+                                                  NR_CSI_MeasConfig_t *csi_MeasConfig,
+                                                  CSI_mapping_t mapping_type);
+static csi_payload_t get_csirs_RSRP_payload(NR_UE_MAC_INST_t *mac,
+                                            struct NR_CSI_ReportConfig *csi_reportconfig,
+                                            NR_CSI_ResourceConfigId_t csi_ResourceConfigId,
+                                            const NR_CSI_MeasConfig_t *csi_MeasConfig);
+
+static uint8_t get_rsrp_diff_index(int best_rsrp, int current_rsrp);
 
 static void nr_ue_process_mac_pdu(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *dl_info, int pdu_id);
 
@@ -1826,114 +1816,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
         LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position in final payload: bits [%d:%d] (offset=%d)\n", 
               csi_msb, csi_lsb, csi_offset);
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
-#ifdef RTD_MATCH_LOG
-        // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
-        {
-          struct timespec ts;
-          if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-            uint64_t ts_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-            int numerology = mac->frame_structure.numb_slots_frame == 10 ? 0 : 
-                             (mac->frame_structure.numb_slots_frame == 20 ? 1 : 
-                             (mac->frame_structure.numb_slots_frame == 40 ? 2 : 3));
-            int subframe = slot / (mac->frame_structure.numb_slots_frame / 10);
-            int total_bits = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-            int csi_offset = pucch->n_harq + pucch->n_sr;
-            int csi_msb = total_bits - 1;
-            int csi_lsb = total_bits - pucch->n_csi;
-            
-            // Find PUCCH resource ID from list
-            int pucch_res_id = -1;
-            if (pucch_Config && pucch_Config->resourceToAddModList) {
-              for (int i = 0; i < pucch_Config->resourceToAddModList->list.count; i++) {
-                if (pucch_Config->resourceToAddModList->list.array[i] == pucchres) {
-                  pucch_res_id = pucch_Config->resourceToAddModList->list.array[i]->pucch_ResourceId;
-                  break;
-                }
-              }
-            }
-            
-            // Generate bitstring for final payload (MSB->LSB)
-            char bits_msb[128] = {0};
-            for (int i = total_bits - 1; i >= 0; i--) {
-              bits_msb[total_bits - 1 - i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Generate bitstring for final payload (LSB->MSB)
-            char bits_lsb[128] = {0};
-            for (int i = 0; i < total_bits; i++) {
-              bits_lsb[i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Extract CSI bits from final payload
-            uint64_t csi_extracted = (pucch_pdu->payload >> csi_offset) & ((1UL << pucch->n_csi) - 1);
-            
-            // Main matching log line (one line for grep)
-            char wall[32];
-            get_wallclock_str(wall, sizeof(wall));
-            
-#ifdef RTD_MATCH_LOG_ACK
-            // Extended log with ACK/SR/CSI details
-            // Calculate ranges (0=LSB, MSB is highest bit)
-            int ack_msb = (pucch->n_harq > 0) ? (pucch->n_harq - 1) : -1;
-            int ack_lsb = (pucch->n_harq > 0) ? 0 : -1;
-            int sr_msb = (pucch->n_sr > 0) ? (pucch->n_harq + pucch->n_sr - 1) : -1;
-            int sr_lsb = (pucch->n_sr > 0) ? pucch->n_harq : -1;
-            
-            // Extract components for verification
-            uint64_t ack_extracted = (pucch->n_harq > 0) ? (pucch_pdu->payload & ((1UL << pucch->n_harq) - 1)) : 0;
-            uint64_t sr_extracted = (pucch->n_sr > 0) ? ((pucch_pdu->payload >> pucch->n_harq) & ((1UL << pucch->n_sr) - 1)) : 0;
-            
-            // Generate bitstrings for each component
-            char ack_msb_str[64] = {0}, ack_lsb_str[64] = {0};
-            char sr_msb_str[64] = {0}, sr_lsb_str[64] = {0};
-            char csi_msb_str[64] = {0}, csi_lsb_str[64] = {0};
-            
-            if (pucch->n_harq > 0) {
-              get_bitstring_msb(ack_msb_str, sizeof(ack_msb_str), pucch->ack_payload, pucch->n_harq);
-              get_bitstring_lsb(ack_lsb_str, sizeof(ack_lsb_str), pucch->ack_payload, pucch->n_harq);
-            } else {
-              snprintf(ack_msb_str, sizeof(ack_msb_str), "(none)");
-              snprintf(ack_lsb_str, sizeof(ack_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_sr > 0) {
-              get_bitstring_msb(sr_msb_str, sizeof(sr_msb_str), pucch->sr_payload, pucch->n_sr);
-              get_bitstring_lsb(sr_lsb_str, sizeof(sr_lsb_str), pucch->sr_payload, pucch->n_sr);
-            } else {
-              snprintf(sr_msb_str, sizeof(sr_msb_str), "(none)");
-              snprintf(sr_lsb_str, sizeof(sr_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_csi > 0) {
-              get_bitstring_msb(csi_msb_str, sizeof(csi_msb_str), pucch->csi_part1_payload, pucch->n_csi);
-              get_bitstring_lsb(csi_lsb_str, sizeof(csi_lsb_str), pucch->csi_part1_payload, pucch->n_csi);
-            } else {
-              snprintf(csi_msb_str, sizeof(csi_msb_str), "(none)");
-              snprintf(csi_lsb_str, sizeof(csi_lsb_str), "(none)");
-            }
-            
-            // Main log line with key info
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=2 finalPayload=0x%lx\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id, pucch_pdu->payload);
-            
-            // Detail line with ACK/SR/CSI breakdown
-            LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] ackBits=%d ackHex=0x%lx ackMSB=%s ackLSB=%s ackRange=[%d:%d] ackExtracted=0x%lx "
-                  "srBits=%d srHex=0x%lx srMSB=%s srLSB=%s srRange=[%d:%d] srExtracted=0x%lx "
-                  "csiBits=%d csiHex=0x%lx csiMSB=%s csiLSB=%s csiRange=[%d:%d] csiExtracted=0x%lx "
-                  "finalMSB=%s finalLSB=%s\n",
-                  pucch->n_harq, pucch->ack_payload, ack_msb_str, ack_lsb_str, ack_msb, ack_lsb, ack_extracted,
-                  pucch->n_sr, pucch->sr_payload, sr_msb_str, sr_lsb_str, sr_msb, sr_lsb, sr_extracted,
-                  pucch->n_csi, pucch->csi_part1_payload, csi_msb_str, csi_lsb_str, csi_msb, csi_lsb, csi_extracted,
-                  bits_msb, bits_lsb);
-#else
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=2 ackBits=%d srBits=%d csiBits=%d csiOffset=%d csiRange=[%d:%d] finalPayload=0x%lx csiExtracted=0x%lx bitsMSB=%s bitsLSB=%s\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id,
-                  pucch->n_harq, pucch->n_sr, pucch->n_csi, csi_offset, csi_msb, csi_lsb,
-                  pucch_pdu->payload, csi_extracted, bits_msb, bits_lsb);
-#endif
-          }
-        }
-#endif
         LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", pucch_pdu->payload);
         // Print bit string for entire payload
         char pucch_bit_str[128] = {0};
@@ -2005,114 +1887,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
         LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
               (final_payload_f3 >> csi_offset_f3) & ((1UL << pucch->n_csi) - 1));
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
-#ifdef RTD_MATCH_LOG
-        // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
-        {
-          struct timespec ts;
-          if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-            uint64_t ts_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-            int numerology = mac->frame_structure.numb_slots_frame == 10 ? 0 : 
-                             (mac->frame_structure.numb_slots_frame == 20 ? 1 : 
-                             (mac->frame_structure.numb_slots_frame == 40 ? 2 : 3));
-            int subframe = slot / (mac->frame_structure.numb_slots_frame / 10);
-            int total_bits = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-            int csi_offset = pucch->n_harq + pucch->n_sr;
-            int csi_msb = total_bits - 1;
-            int csi_lsb = total_bits - pucch->n_csi;
-            
-            // Find PUCCH resource ID from list
-            int pucch_res_id = -1;
-            if (pucch_Config && pucch_Config->resourceToAddModList) {
-              for (int i = 0; i < pucch_Config->resourceToAddModList->list.count; i++) {
-                if (pucch_Config->resourceToAddModList->list.array[i] == pucchres) {
-                  pucch_res_id = pucch_Config->resourceToAddModList->list.array[i]->pucch_ResourceId;
-                  break;
-                }
-              }
-            }
-            
-            // Generate bitstring for final payload (MSB->LSB)
-            char bits_msb[128] = {0};
-            for (int i = total_bits - 1; i >= 0; i--) {
-              bits_msb[total_bits - 1 - i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Generate bitstring for final payload (LSB->MSB)
-            char bits_lsb[128] = {0};
-            for (int i = 0; i < total_bits; i++) {
-              bits_lsb[i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Extract CSI bits from final payload
-            uint64_t csi_extracted = (pucch_pdu->payload >> csi_offset) & ((1UL << pucch->n_csi) - 1);
-            
-            // Main matching log line (one line for grep)
-            char wall[32];
-            get_wallclock_str(wall, sizeof(wall));
-            
-#ifdef RTD_MATCH_LOG_ACK
-            // Extended log with ACK/SR/CSI details
-            // Calculate ranges (0=LSB, MSB is highest bit)
-            int ack_msb = (pucch->n_harq > 0) ? (pucch->n_harq - 1) : -1;
-            int ack_lsb = (pucch->n_harq > 0) ? 0 : -1;
-            int sr_msb = (pucch->n_sr > 0) ? (pucch->n_harq + pucch->n_sr - 1) : -1;
-            int sr_lsb = (pucch->n_sr > 0) ? pucch->n_harq : -1;
-            
-            // Extract components for verification
-            uint64_t ack_extracted = (pucch->n_harq > 0) ? (pucch_pdu->payload & ((1UL << pucch->n_harq) - 1)) : 0;
-            uint64_t sr_extracted = (pucch->n_sr > 0) ? ((pucch_pdu->payload >> pucch->n_harq) & ((1UL << pucch->n_sr) - 1)) : 0;
-            
-            // Generate bitstrings for each component
-            char ack_msb_str[64] = {0}, ack_lsb_str[64] = {0};
-            char sr_msb_str[64] = {0}, sr_lsb_str[64] = {0};
-            char csi_msb_str[64] = {0}, csi_lsb_str[64] = {0};
-            
-            if (pucch->n_harq > 0) {
-              get_bitstring_msb(ack_msb_str, sizeof(ack_msb_str), pucch->ack_payload, pucch->n_harq);
-              get_bitstring_lsb(ack_lsb_str, sizeof(ack_lsb_str), pucch->ack_payload, pucch->n_harq);
-            } else {
-              snprintf(ack_msb_str, sizeof(ack_msb_str), "(none)");
-              snprintf(ack_lsb_str, sizeof(ack_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_sr > 0) {
-              get_bitstring_msb(sr_msb_str, sizeof(sr_msb_str), pucch->sr_payload, pucch->n_sr);
-              get_bitstring_lsb(sr_lsb_str, sizeof(sr_lsb_str), pucch->sr_payload, pucch->n_sr);
-            } else {
-              snprintf(sr_msb_str, sizeof(sr_msb_str), "(none)");
-              snprintf(sr_lsb_str, sizeof(sr_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_csi > 0) {
-              get_bitstring_msb(csi_msb_str, sizeof(csi_msb_str), pucch->csi_part1_payload, pucch->n_csi);
-              get_bitstring_lsb(csi_lsb_str, sizeof(csi_lsb_str), pucch->csi_part1_payload, pucch->n_csi);
-            } else {
-              snprintf(csi_msb_str, sizeof(csi_msb_str), "(none)");
-              snprintf(csi_lsb_str, sizeof(csi_lsb_str), "(none)");
-            }
-            
-            // Main log line with key info
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=3 finalPayload=0x%lx\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id, pucch_pdu->payload);
-            
-            // Detail line with ACK/SR/CSI breakdown
-            LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] ackBits=%d ackHex=0x%lx ackMSB=%s ackLSB=%s ackRange=[%d:%d] ackExtracted=0x%lx "
-                  "srBits=%d srHex=0x%lx srMSB=%s srLSB=%s srRange=[%d:%d] srExtracted=0x%lx "
-                  "csiBits=%d csiHex=0x%lx csiMSB=%s csiLSB=%s csiRange=[%d:%d] csiExtracted=0x%lx "
-                  "finalMSB=%s finalLSB=%s\n",
-                  pucch->n_harq, pucch->ack_payload, ack_msb_str, ack_lsb_str, ack_msb, ack_lsb, ack_extracted,
-                  pucch->n_sr, pucch->sr_payload, sr_msb_str, sr_lsb_str, sr_msb, sr_lsb, sr_extracted,
-                  pucch->n_csi, pucch->csi_part1_payload, csi_msb_str, csi_lsb_str, csi_msb, csi_lsb, csi_extracted,
-                  bits_msb, bits_lsb);
-#else
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=3 ackBits=%d srBits=%d csiBits=%d csiOffset=%d csiRange=[%d:%d] finalPayload=0x%lx csiExtracted=0x%lx bitsMSB=%s bitsLSB=%s\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id,
-                  pucch->n_harq, pucch->n_sr, pucch->n_csi, csi_offset, csi_msb, csi_lsb,
-                  pucch_pdu->payload, csi_extracted, bits_msb, bits_lsb);
-#endif
-          }
-        }
-#endif
         break;
       case NR_PUCCH_Resource__format_PR_format4 :
         pucch_pdu->format_type = 4;
@@ -2146,114 +1920,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
         LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
               (final_payload_f4 >> csi_offset_f4) & ((1UL << pucch->n_csi) - 1));
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
-#ifdef RTD_MATCH_LOG
-        // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
-        {
-          struct timespec ts;
-          if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-            uint64_t ts_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-            int numerology = mac->frame_structure.numb_slots_frame == 10 ? 0 : 
-                             (mac->frame_structure.numb_slots_frame == 20 ? 1 : 
-                             (mac->frame_structure.numb_slots_frame == 40 ? 2 : 3));
-            int subframe = slot / (mac->frame_structure.numb_slots_frame / 10);
-            int total_bits = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-            int csi_offset = pucch->n_harq + pucch->n_sr;
-            int csi_msb = total_bits - 1;
-            int csi_lsb = total_bits - pucch->n_csi;
-            
-            // Find PUCCH resource ID from list
-            int pucch_res_id = -1;
-            if (pucch_Config && pucch_Config->resourceToAddModList) {
-              for (int i = 0; i < pucch_Config->resourceToAddModList->list.count; i++) {
-                if (pucch_Config->resourceToAddModList->list.array[i] == pucchres) {
-                  pucch_res_id = pucch_Config->resourceToAddModList->list.array[i]->pucch_ResourceId;
-                  break;
-                }
-              }
-            }
-            
-            // Generate bitstring for final payload (MSB->LSB)
-            char bits_msb[128] = {0};
-            for (int i = total_bits - 1; i >= 0; i--) {
-              bits_msb[total_bits - 1 - i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Generate bitstring for final payload (LSB->MSB)
-            char bits_lsb[128] = {0};
-            for (int i = 0; i < total_bits; i++) {
-              bits_lsb[i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-            }
-            
-            // Extract CSI bits from final payload
-            uint64_t csi_extracted = (pucch_pdu->payload >> csi_offset) & ((1UL << pucch->n_csi) - 1);
-            
-            // Main matching log line (one line for grep)
-            char wall[32];
-            get_wallclock_str(wall, sizeof(wall));
-            
-#ifdef RTD_MATCH_LOG_ACK
-            // Extended log with ACK/SR/CSI details
-            // Calculate ranges (0=LSB, MSB is highest bit)
-            int ack_msb = (pucch->n_harq > 0) ? (pucch->n_harq - 1) : -1;
-            int ack_lsb = (pucch->n_harq > 0) ? 0 : -1;
-            int sr_msb = (pucch->n_sr > 0) ? (pucch->n_harq + pucch->n_sr - 1) : -1;
-            int sr_lsb = (pucch->n_sr > 0) ? pucch->n_harq : -1;
-            
-            // Extract components for verification
-            uint64_t ack_extracted = (pucch->n_harq > 0) ? (pucch_pdu->payload & ((1UL << pucch->n_harq) - 1)) : 0;
-            uint64_t sr_extracted = (pucch->n_sr > 0) ? ((pucch_pdu->payload >> pucch->n_harq) & ((1UL << pucch->n_sr) - 1)) : 0;
-            
-            // Generate bitstrings for each component
-            char ack_msb_str[64] = {0}, ack_lsb_str[64] = {0};
-            char sr_msb_str[64] = {0}, sr_lsb_str[64] = {0};
-            char csi_msb_str[64] = {0}, csi_lsb_str[64] = {0};
-            
-            if (pucch->n_harq > 0) {
-              get_bitstring_msb(ack_msb_str, sizeof(ack_msb_str), pucch->ack_payload, pucch->n_harq);
-              get_bitstring_lsb(ack_lsb_str, sizeof(ack_lsb_str), pucch->ack_payload, pucch->n_harq);
-            } else {
-              snprintf(ack_msb_str, sizeof(ack_msb_str), "(none)");
-              snprintf(ack_lsb_str, sizeof(ack_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_sr > 0) {
-              get_bitstring_msb(sr_msb_str, sizeof(sr_msb_str), pucch->sr_payload, pucch->n_sr);
-              get_bitstring_lsb(sr_lsb_str, sizeof(sr_lsb_str), pucch->sr_payload, pucch->n_sr);
-            } else {
-              snprintf(sr_msb_str, sizeof(sr_msb_str), "(none)");
-              snprintf(sr_lsb_str, sizeof(sr_lsb_str), "(none)");
-            }
-            
-            if (pucch->n_csi > 0) {
-              get_bitstring_msb(csi_msb_str, sizeof(csi_msb_str), pucch->csi_part1_payload, pucch->n_csi);
-              get_bitstring_lsb(csi_lsb_str, sizeof(csi_lsb_str), pucch->csi_part1_payload, pucch->n_csi);
-            } else {
-              snprintf(csi_msb_str, sizeof(csi_msb_str), "(none)");
-              snprintf(csi_lsb_str, sizeof(csi_lsb_str), "(none)");
-            }
-            
-            // Main log line with key info
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=4 finalPayload=0x%lx\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id, pucch_pdu->payload);
-            
-            // Detail line with ACK/SR/CSI breakdown
-            LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] ackBits=%d ackHex=0x%lx ackMSB=%s ackLSB=%s ackRange=[%d:%d] ackExtracted=0x%lx "
-                  "srBits=%d srHex=0x%lx srMSB=%s srLSB=%s srRange=[%d:%d] srExtracted=0x%lx "
-                  "csiBits=%d csiHex=0x%lx csiMSB=%s csiLSB=%s csiRange=[%d:%d] csiExtracted=0x%lx "
-                  "finalMSB=%s finalLSB=%s\n",
-                  pucch->n_harq, pucch->ack_payload, ack_msb_str, ack_lsb_str, ack_msb, ack_lsb, ack_extracted,
-                  pucch->n_sr, pucch->sr_payload, sr_msb_str, sr_lsb_str, sr_msb, sr_lsb, sr_extracted,
-                  pucch->n_csi, pucch->csi_part1_payload, csi_msb_str, csi_lsb_str, csi_msb, csi_lsb, csi_extracted,
-                  bits_msb, bits_lsb);
-#else
-            LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d format=4 ackBits=%d srBits=%d csiBits=%d csiOffset=%d csiRange=[%d:%d] finalPayload=0x%lx csiExtracted=0x%lx bitsMSB=%s bitsLSB=%s\n",
-                  wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, pucch_res_id,
-                  pucch->n_harq, pucch->n_sr, pucch->n_csi, csi_offset, csi_msb, csi_lsb,
-                  pucch_pdu->payload, csi_extracted, bits_msb, bits_lsb);
-#endif
-          }
-        }
-#endif
         break;
       default :
         LOG_E(NR_MAC, "Undefined PUCCH format \n");
@@ -3182,46 +2848,6 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
               pucch->n_csi = csi.p1_bits;
               pucch->csi_part1_payload = csi.part1_payload;
               pucch->pucch_resource = csi_pucch;
-#ifdef RTD_MATCH_LOG
-              // RTD_MATCH: Log CSI payload generation with timestamp and frame/slot info
-              {
-                struct timespec ts;
-                if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-                  uint64_t ts_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-                  int numerology = mac->frame_structure.numb_slots_frame == 10 ? 0 : 
-                                   (mac->frame_structure.numb_slots_frame == 20 ? 1 : 
-                                   (mac->frame_structure.numb_slots_frame == 40 ? 2 : 3));
-                  int subframe = slot / (mac->frame_structure.numb_slots_frame / 10);
-                  uint16_t rnti = mac->crnti;
-                  
-                  // Generate bitstring (MSB->LSB: b12->b0)
-                  char bits_msb[64] = {0};
-                  for (int i = csi.p1_bits - 1; i >= 0; i--) {
-                    bits_msb[csi.p1_bits - 1 - i] = ((csi.part1_payload >> i) & 1) ? '1' : '0';
-                  }
-                  
-                  // Generate bitstring (LSB->MSB: b0->b12)
-                  char bits_lsb[64] = {0};
-                  for (int i = 0; i < csi.p1_bits; i++) {
-                    bits_lsb[i] = ((csi.part1_payload >> i) & 1) ? '1' : '0';
-                  }
-                  
-                  // Main matching log line (one line for grep)
-                  char wall[32];
-                  get_wallclock_str(wall, sizeof(wall));
-                  LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d repCfg=%d csiBits=%d payload=0x%lx bitsMSB=%s bitsLSB=%s\n",
-                        wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, csi_res_id, csi_report_id, 
-                        csi.p1_bits, csi.part1_payload, bits_msb, bits_lsb);
-                  
-                  // Detailed log (optional, for debugging)
-#ifdef RTD_TEST_MODE
-                  LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] RI=%d i1=%d i2=%d CQI=%d PAD=%d part1_bits=%d part2_bits=%d\n",
-                        mac->csirs_measurements.ri, mac->csirs_measurements.i1, 
-                        mac->csirs_measurements.i2, mac->csirs_measurements.cqi, 0, csi.p1_bits, csi.p2_bits);
-#endif
-                }
-              }
-#endif
             } else
               continue;
           } else {
@@ -3231,46 +2857,6 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
             pucch->n_csi = csi.p1_bits;
             pucch->csi_part1_payload = csi.part1_payload;
             pucch->pucch_resource = csi_pucch;
-#ifdef RTD_MATCH_LOG
-            // RTD_MATCH: Log CSI payload generation with timestamp and frame/slot info
-            {
-              struct timespec ts;
-              if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-                uint64_t ts_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-                int numerology = mac->frame_structure.numb_slots_frame == 10 ? 0 : 
-                                 (mac->frame_structure.numb_slots_frame == 20 ? 1 : 
-                                 (mac->frame_structure.numb_slots_frame == 40 ? 2 : 3));
-                int subframe = slot / (mac->frame_structure.numb_slots_frame / 10);
-                uint16_t rnti = mac->crnti;
-                
-                // Generate bitstring (MSB->LSB: b12->b0)
-                char bits_msb[64] = {0};
-                for (int i = csi.p1_bits - 1; i >= 0; i--) {
-                  bits_msb[csi.p1_bits - 1 - i] = ((csi.part1_payload >> i) & 1) ? '1' : '0';
-                }
-                
-                // Generate bitstring (LSB->MSB: b0->b12)
-                char bits_lsb[64] = {0};
-                for (int i = 0; i < csi.p1_bits; i++) {
-                  bits_lsb[i] = ((csi.part1_payload >> i) & 1) ? '1' : '0';
-                }
-                
-                // Main matching log line (one line for grep)
-                char wall[32];
-                get_wallclock_str(wall, sizeof(wall));
-                LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d repCfg=%d csiBits=%d payload=0x%lx bitsMSB=%s bitsLSB=%s\n",
-                      wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, csi_res_id, csi_report_id, 
-                      csi.p1_bits, csi.part1_payload, bits_msb, bits_lsb);
-                
-                // Detailed log (optional, for debugging)
-#ifdef RTD_TEST_MODE
-                LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] RI=%d i1=%d i2=%d CQI=%d PAD=%d part1_bits=%d part2_bits=%d\n",
-                      mac->csirs_measurements.ri, mac->csirs_measurements.i1, 
-                      mac->csirs_measurements.i2, mac->csirs_measurements.cqi, 0, csi.p1_bits, csi.p2_bits);
-#endif
-              }
-            }
-#endif
           }
         }
       }
@@ -3423,6 +3009,15 @@ csi_payload_t nr_get_csi_payload(NR_UE_MAC_INST_t *mac,
         break;
       case NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI:
         csi = get_csirs_RI_PMI_CQI_payload(mac, csi_reportconfig, csi_ResourceConfigId, csi_MeasConfig, mapping_type);
+        // 디버그 로그: CSI payload 정보 출력
+        LOG_I(NR_MAC, "[RTD_13BIT] nr_get_csi_payload() returned:\n");
+        LOG_I(NR_MAC, "[RTD_13BIT]   CSI part1_payload (hex) = 0x%lx\n", csi.part1_payload);
+        LOG_I(NR_MAC, "[RTD_13BIT]   CSI p1_bits = %d\n", csi.p1_bits);
+        LOG_I(NR_MAC, "[RTD_13BIT]   CSI part2_payload (hex) = 0x%lx\n", csi.part2_payload);
+        LOG_I(NR_MAC, "[RTD_13BIT]   CSI p2_bits = %d\n", csi.p2_bits);
+        // CSI-only 값 검증 (HARQ/SR와 합성되기 전의 순수 CSI 값)
+        // 이 값은 get_csirs_RI_PMI_CQI_payload()에서 생성한 temp_payload_1과 동일해야 함
+        LOG_I(NR_MAC, "[RTD_13BIT]   CSI-only value (extracted from part1_payload) = 0x%lx\n", csi.part1_payload);
         break;
       case NR_CSI_ReportConfig__reportQuantity_PR_cri_RSRP:
         csi = get_csirs_RSRP_payload(mac, csi_reportconfig, csi_ResourceConfigId, csi_MeasConfig);
@@ -3637,8 +3232,9 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
           int cqi_bitlen = csi_report->csi_meas_bitlen.cqi_bitlen[mac->csirs_measurements.ri];
           int padding_bitlen = 0;
           // TODO: Improvements will be needed to cri_bitlen>0 and pmi_x1_bitlen>0
+#ifdef FORCE_RTD_CSI_BITMAP
           // RTD Test Mode: Force fixed 13-bit format matching RTD decoder expectations
-          // Format (MSB → LSB): RI(2) | PMI_i2(2) | PMI_i11(4) | CQI(4) | PAD(1) = 13 bits
+          // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
           // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
           if (mapping_type == ON_PUSCH) {
             // ON_PUSCH mode: keep original logic
@@ -3652,106 +3248,130 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
           }
           else {
             // PUCCH mode: RTD fixed format
-            // RTD Test Mode: Force fixed 15-bit format matching RTD decoder expectations
-            // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(4) | CQI(4) | PAD(1) = 15 bits
-            // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
-            p1_bits = 15;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(4) + CQI(4) + PAD(1)
+            p1_bits = 13;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(2) + CQI(4) + PAD(1)
             p2_bits = 0;   // Part-2 not used in RTD format
             
-            // ===== RI Encoding =====
-            // OAI stores RI as 0-based (0=rank1, 1=rank2, 2=rank3, 3=rank4)
-            // RTD may expect either rank value (1-4) or rank-1 (0-3)
-            uint8_t ri_raw = mac->csirs_measurements.ri;  // 0-based rank index
-            uint8_t ri_val;
-#ifdef FORCE_RTD_RI_ENC_RANK
-            // RTD expects rank value (1-4)
-            ri_val = (ri_raw + 1) & 0x3;  // Convert to rank (1-4), then mask to 2 bits
-            // Note: rank 4 would be encoded as 0, but should be 3 (max for 2 bits)
-            if (ri_raw >= 3) ri_val = 3;  // Cap at 3 (rank 4 → encoded as 3)
-#else
-            // Default: RTD expects rank-1 (0-3), which matches OAI's 0-based storage
-            ri_val = ri_raw & 0x3;  // RI: 2 bits (mask to 4 candidates: 0,1,2,3)
-#endif
+            // Extract and mask PMI values to fit RTD format
+            // PMI_i11 (i1) should be 4 bits, PMI_i2 should be 2 bits
+            uint8_t ri_val = mac->csirs_measurements.ri & 0x3;        // RI: 2 bits (mask to 4 candidates)
+            uint8_t pmi_i11_val = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
+            uint8_t pmi_i2_val = mac->csirs_measurements.i2 & 0x3;   // PMI_i2: 2 bits (mask to 4 candidates)
+            uint8_t cqi_val = mac->csirs_measurements.cqi & 0xF;     // CQI: 4 bits (mask to 16 candidates)
+            uint8_t pad_val = 0;                                      // Padding: 1 bit, fixed to 0
             
-            // ===== PMI Encoding =====
-            // OAI stores i1 as combined value (may include i11, i12, i13)
-            // RTD expects i11 (4 bits) and i2 (4 bits) - i2 is now 4 bits instead of 2 bits
-            uint8_t pmi_i11_val;
-            uint8_t pmi_i2_val;
-#ifdef FORCE_RTD_PMI_ZERO
-            // Force zero mode (for decoder boundary validation)
-            pmi_i11_val = 0;
-            pmi_i2_val = 0;
-#else
-            // Default: Use calculated values directly (no truncation)
-            // Extract lower 4 bits of i1 as i11 (RTD assumes i11 is 4 bits)
-            pmi_i11_val = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
-            // Use i2 value directly as 4 bits (no truncation from 2 bits)
-            pmi_i2_val = mac->csirs_measurements.i2 & 0xF;  // PMI_i2: 4 bits (mask to 16 candidates)
-#endif
-            
-            // ===== CQI Encoding =====
-            uint8_t cqi_val = mac->csirs_measurements.cqi & 0xF;  // CQI: 4 bits (mask to 16 candidates)
-            
-            // ===== Padding =====
-            uint8_t pad_val = 0;  // Padding: 1 bit, fixed to 0
-            
-            // ===== Payload Packing =====
-            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(4) | CQI(4) | PAD(1)
-            temp_payload_1 = ((uint64_t)ri_val << 13) |      // RI at bits [14:13]
-                             ((uint64_t)pmi_i11_val << 9) |  // PMI_i11 at bits [12:9]
-                             ((uint64_t)pmi_i2_val << 5) |   // PMI_i2 at bits [8:5]
+            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1)
+            // Direct packing without reverse_bits (RTD expects this exact order)
+            temp_payload_1 = ((uint64_t)ri_val << 11) |      // RI at bits [12:11]
+                             ((uint64_t)pmi_i11_val << 7) |  // PMI_i11 at bits [10:7]
+                             ((uint64_t)pmi_i2_val << 5) |   // PMI_i2 at bits [6:5]
                              ((uint64_t)cqi_val << 1) |      // CQI at bits [4:1]
                              ((uint64_t)pad_val);            // PAD at bit [0]
             
             temp_payload_2 = 0;
             
-            // ===== Bit Order Handling =====
-#ifdef FORCE_RTD_WITH_REVERSE
-            // Apply reverse_bits (if RTD expects reversed order)
+            // RTD mode: DO NOT apply reverse_bits (RTD expects direct bit order)
+            // Log detailed information for RTD validation
+            LOG_D(NR_MAC, "[RTD_TEST_MODE] CSI Part-1 Payload (13 bits fixed format):\n");
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   RI (2 bits) = %d (0x%x)\n", ri_val, ri_val);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PMI_i11 (4 bits) = %d (0x%x), original i1 = %d\n", pmi_i11_val, pmi_i11_val, mac->csirs_measurements.i1);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PMI_i2 (2 bits) = %d (0x%x), original i2 = %d\n", pmi_i2_val, pmi_i2_val, mac->csirs_measurements.i2);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   CQI (4 bits) = %d (0x%x)\n", cqi_val, cqi_val);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   PAD (1 bit) = %d\n", pad_val);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Final payload (hex) = 0x%lx\n", temp_payload_1);
+            // Print bit string representation
+            char bit_str[14] = {0};
+            for (int i = 12; i >= 0; i--) {
+              bit_str[12-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
+            }
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   Bit order: NO reverse_bits applied (RTD direct format)\n");
+            LOG_D(NR_MAC, "[RTD_TEST_MODE]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
+          }
+#else
+          // Original OAI logic (standard compliant)
+          if (mapping_type == ON_PUSCH) {
+            p1_bits = cri_bitlen + ri_bitlen + cqi_bitlen;
+            p2_bits = pmi_x1_bitlen + pmi_x2_bitlen;
+            temp_payload_1 = (0/*mac->csi_measurements.cri*/ << (cqi_bitlen + ri_bitlen)) |
+                             (mac->csirs_measurements.ri << cqi_bitlen) |
+                             (mac->csirs_measurements.cqi);
+            temp_payload_2 = (mac->csirs_measurements.i1 << pmi_x2_bitlen) |
+                             mac->csirs_measurements.i2;
             temp_payload_1 = reverse_bits(temp_payload_1, p1_bits);
             temp_payload_2 = reverse_bits(temp_payload_2, p2_bits);
-#endif
-            // Default: NO reverse_bits (RTD expects direct bit order)
+          }
+          else {
+            // RTD 13bit 고정 포맷: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
+            // Project_잘됨_RTD와 동일하게 구현
+            p1_bits = 13;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(2) + CQI(4) + PAD(1)
+            p2_bits = 0;   // Part-2 not used in RTD format
+            
+            // ===== RI Encoding =====
+            // OAI stores RI as 0-based (0=rank1, 1=rank2, 2=rank3, 3=rank4)
+            // RTD expects rank-1 (0-3), which matches OAI's 0-based storage
+            uint8_t ri_raw = mac->csirs_measurements.ri;  // 0-based rank index
+            uint8_t ri_enc = ri_raw & 0x3;  // RI: 2 bits (mask to 4 candidates: 0,1,2,3)
+            
+            // ===== PMI Encoding =====
+            // OAI stores i1 as combined value (may include i11, i12, i13)
+            // RTD expects only i11 (4 bits) and i2 (2 bits)
+            // Extract lower 4 bits of i1 as i11 (RTD assumes i11 is 4 bits)
+            uint8_t i1 = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
+            uint8_t i2 = mac->csirs_measurements.i2 & 0x3;  // PMI_i2: 2 bits (mask to 4 candidates)
+            
+            // ===== CQI Encoding =====
+            uint8_t cqi = mac->csirs_measurements.cqi & 0xF;  // CQI: 4 bits (mask to 16 candidates)
+            
+            // ===== Padding =====
+            uint8_t pad = 0;  // Padding: 1 bit, fixed to 0
+            
+            // ===== Payload Packing =====
+            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1)
+            // Bit positions: RI[12:11], PMI_i11[10:7], PMI_i2[6:5], CQI[4:1], PAD[0]
+            temp_payload_1 = ((uint64_t)ri_enc << 11) |      // RI at bits [12:11]
+                             ((uint64_t)i1 << 7) |            // PMI_i11 at bits [10:7]
+                             ((uint64_t)i2 << 5) |            // PMI_i2 at bits [6:5]
+                             ((uint64_t)cqi << 1) |           // CQI at bits [4:1]
+                             ((uint64_t)pad);                 // PAD at bit [0]
+            
+            temp_payload_2 = 0;
+            
+            // ===== Bit Order Handling =====
+            // Project_잘됨_RTD와 동일: reverse_bits 미적용 (RTD expects direct bit order)
+            // reverse_bits는 적용하지 않음
             
             // ===== Detailed Logging =====
-            LOG_I(NR_MAC, "[RTD_TEST_MODE] CSI Part-1 Payload (15 bits fixed format):\n");
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original RI (0-based) = %d, Encoded RI (2 bits) = %d (0x%x)\n", 
-                  ri_raw, ri_val, ri_val);
-#ifdef FORCE_RTD_RI_ENC_RANK
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK (1-4)\n");
-#else
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK_MINUS1 (0-3)\n");
-#endif
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i1 = %d, Encoded PMI_i11 (4 bits) = %d (0x%x)\n", 
-                  mac->csirs_measurements.i1, pmi_i11_val, pmi_i11_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i2 = %d, Encoded PMI_i2 (4 bits) = %d (0x%x)\n", 
-                  mac->csirs_measurements.i2, pmi_i2_val, pmi_i2_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   CQI (4 bits) = %d (0x%x)\n", cqi_val, cqi_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   PAD (1 bit) = %d\n", pad_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (hex) = 0x%lx\n", temp_payload_1);
+            LOG_I(NR_MAC, "[RTD_13BIT] CSI Part-1 Payload (13 bits fixed format):\n");
+            LOG_I(NR_MAC, "[RTD_13BIT]   Original RI (0-based) = %d, Encoded RI (2 bits) = %d (0x%x)\n", 
+                  ri_raw, ri_enc, ri_enc);
+            LOG_I(NR_MAC, "[RTD_13BIT]   RI encoding mode: RANK_MINUS1 (0-3)\n");
+            LOG_I(NR_MAC, "[RTD_13BIT]   Original i1 = %d, Encoded PMI_i11 (4 bits) = %d (0x%x)\n", 
+                  mac->csirs_measurements.i1, i1, i1);
+            LOG_I(NR_MAC, "[RTD_13BIT]   Original i2 = %d, Encoded PMI_i2 (2 bits) = %d (0x%x)\n", 
+                  mac->csirs_measurements.i2, i2, i2);
+            LOG_I(NR_MAC, "[RTD_13BIT]   CQI (4 bits) = %d (0x%x)\n", cqi, cqi);
+            LOG_I(NR_MAC, "[RTD_13BIT]   PAD (1 bit) = %d\n", pad);
+            LOG_I(NR_MAC, "[RTD_13BIT]   Final payload (hex) = 0x%lx\n", temp_payload_1);
             // Print bit string representation
-            char bit_str[16] = {0};
-            for (int i = 14; i >= 0; i--) {
-              bit_str[14-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
+            char bit_str[14] = {0};
+            for (int i = 12; i >= 0; i--) {
+              bit_str[12-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
             }
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
-#ifdef FORCE_RTD_WITH_REVERSE
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: WITH reverse_bits applied\n");
-#else
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: NO reverse_bits applied (RTD direct format)\n");
-#endif
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
+            LOG_I(NR_MAC, "[RTD_13BIT]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
+            LOG_I(NR_MAC, "[RTD_13BIT]   Bit order: NO reverse_bits applied (RTD direct format)\n");
+            LOG_I(NR_MAC, "[RTD_13BIT]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
+            
+            // 기존 로그도 유지 (호환성)
+            LOG_D(NR_MAC, "cri_bitlen = %d\n", cri_bitlen);
+            LOG_D(NR_MAC, "ri_bitlen = %d\n", ri_bitlen);
+            LOG_D(NR_MAC, "pmi_x1_bitlen = %d\n", pmi_x1_bitlen);
+            LOG_D(NR_MAC, "pmi_x2_bitlen = %d\n", pmi_x2_bitlen);
+            LOG_D(NR_MAC, "cqi_bitlen = %d\n", cqi_bitlen);
+            LOG_D(NR_MAC, "csi_part1_payload = 0x%lx\n", temp_payload_1);
+            LOG_D(NR_MAC, "csi_part2_payload = 0x%lx\n", temp_payload_2);
+            LOG_D(NR_MAC, "part1_bits = %d\n", p1_bits);
+            LOG_D(NR_MAC, "part2_bits = %d\n", p2_bits);
           }
-          LOG_D(NR_MAC, "cri_bitlen = %d\n", cri_bitlen);
-          LOG_D(NR_MAC, "ri_bitlen = %d\n", ri_bitlen);
-          LOG_D(NR_MAC, "pmi_x1_bitlen = %d\n", pmi_x1_bitlen);
-          LOG_D(NR_MAC, "pmi_x2_bitlen = %d\n", pmi_x2_bitlen);
-          LOG_D(NR_MAC, "cqi_bitlen = %d\n", cqi_bitlen);
-          LOG_D(NR_MAC, "csi_part1_payload = 0x%lx\n", temp_payload_1);
-          LOG_D(NR_MAC, "csi_part2_payload = 0x%lx\n", temp_payload_2);
-          LOG_D(NR_MAC, "part1_bits = %d\n", p1_bits);
-          LOG_D(NR_MAC, "part2_bits = %d\n", p2_bits);
           break;
         }
       }

@@ -1,0 +1,12 @@
+cmake_targets/
+build/
+*/build/
+*.o
+*.a
+*.so
+*.log
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store

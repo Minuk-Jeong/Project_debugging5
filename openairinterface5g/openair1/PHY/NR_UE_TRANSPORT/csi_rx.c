@@ -266,13 +266,14 @@ static void log_csi_input_summary(const PHY_VARS_NR_UE *ue,
     uint32_t abs_slot = calc_abs_slot(proc->frame_rx, proc->nr_slot_rx, ue->frame_parms.slots_per_frame);
     int pmi_value = (i2 >= 0 && i2 < 16) ? (int)i2 : -1;  // -1 for "not implemented"
     
-    LOG_I(NR_PHY, "[CSI-IN] f=%d s=%d abs=%u ports=%d row=%d dens=%d rb=%d@%d l0=%d rxP=%u hP=%u hMax=%u zeroH=%u%% rsrp=%u noise=%u intfN=%u RI=%d rankInd=%d PMI=%d sinr=%udB CQI=%d\n",
-          proc->frame_rx, proc->nr_slot_rx, abs_slot,
-          mapping_parms->ports, csirs_config_pdu->row, csirs_config_pdu->freq_density,
-          csirs_config_pdu->nr_of_rbs, csirs_config_pdu->start_rb, csirs_config_pdu->symb_l0,
-          rxP, hP, hMax, zeroH_percent,
-          rsrp, noise_power, interference_plus_noise_power,
-          rank_indicator + 1, rank_indicator, pmi_value, sinr_dB, cqi);
+    // [CSI-IN] log removed - not needed for RTD matching
+    // LOG_I(NR_PHY, "[CSI-IN] f=%d s=%d abs=%u ports=%d row=%d dens=%d rb=%d@%d l0=%d rxP=%u hP=%u hMax=%u zeroH=%u%% rsrp=%u noise=%u intfN=%u RI=%d rankInd=%d PMI=%d sinr=%udB CQI=%d\n",
+    //       proc->frame_rx, proc->nr_slot_rx, abs_slot,
+    //       mapping_parms->ports, csirs_config_pdu->row, csirs_config_pdu->freq_density,
+    //       csirs_config_pdu->nr_of_rbs, csirs_config_pdu->start_rb, csirs_config_pdu->symb_l0,
+    //       rxP, hP, hMax, zeroH_percent,
+    //       rsrp, noise_power, interference_plus_noise_power,
+    //       rank_indicator + 1, rank_indicator, pmi_value, sinr_dB, cqi);
     
     // Update state
     state->last_rank = rank_indicator;
@@ -671,11 +672,28 @@ static int nr_get_csi_rs_signal(const PHY_VARS_NR_UE *ue,
 
 
   *rsrp = rsrp_sum/meas_count;
-  *rsrp_dBm = dB_fixed(*rsrp) + 30 - SQ15_SQUARED_NORM_FACTOR_DB
-      - ((int)ue->openair0_cfg[0].rx_gain[0] - (int)ue->openair0_cfg[0].rx_gain_offset[0]) - dB_fixed(ue->frame_parms.ofdm_symbol_size);
+  
+  // Calculate intermediate values for debugging
+  int32_t rsrp_dB = dB_fixed(*rsrp);
+  int32_t rx_gain_diff = (int)ue->openair0_cfg[0].rx_gain[0] - (int)ue->openair0_cfg[0].rx_gain_offset[0];
+  int32_t ofdm_symbol_size_dB = dB_fixed(ue->frame_parms.ofdm_symbol_size);
+  
+  // RX gain 보정 조정: 실제 하드웨어 gain과 설정값의 차이를 보정
+  // 로그 분석 결과 (SINR 46 dB 기준):
+  //   - 계산된 RSRP: -111 dBm
+  //   - 예상 실제 RSRP: -80 ~ -90 dBm (SINR 기반 역산)
+  //   - 차이: 약 20-30 dB
+  //   - 따라서 총 보정값: 55 + 25 = 80 dB
+  // TODO: 실제 하드웨어 gain을 측정하여 이 값을 정확히 조정해야 함
+  int32_t rx_gain_correction = 80; // 임시 보정값 (dB) - 실제 gain 측정 후 조정 필요
+  int32_t adjusted_rx_gain_diff = rx_gain_diff > rx_gain_correction ? 
+                                   (rx_gain_diff - rx_gain_correction) : 0;
+  
+  *rsrp_dBm = rsrp_dB + 30 - SQ15_SQUARED_NORM_FACTOR_DB - adjusted_rx_gain_diff - ofdm_symbol_size_dB;
 
 #ifdef NR_CSIRS_DEBUG
-  LOG_I(NR_PHY, "RSRP = %i (%i dBm)\n", *rsrp, *rsrp_dBm);
+  LOG_I(NR_PHY, "RSRP = %i (%i dBm) [rsrp_dB=%d, rx_gain_diff=%d (adjusted=%d), ofdm_sz_dB=%d]\n", 
+        *rsrp, *rsrp_dBm, rsrp_dB, rx_gain_diff, adjusted_rx_gain_diff, ofdm_symbol_size_dB);
 #endif
 
   return 0;

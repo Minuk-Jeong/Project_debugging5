@@ -1,0 +1,55 @@
+--- openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
++++ openair2/LAYER2/NR_MAC_COMMON/nr_mac_common.c
+@@ -4788,11 +4788,44 @@ void compute_csi_bitlen(const NR_CSI_MeasConfig_t *csi_MeasConfig, nr_csi_report
+           AssertFatal(1 == 0, "Not yet supported CSI report quantity type");
+       }
+     }
++#ifdef FORCE_RTD_CSI_BITMAP
++    // RTD Test Mode: Force fixed bitlen values to match RTD decoder expectations
++    // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits total
++    // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++    if (csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI
++        || csi_report->reportQuantity_type == NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_CQI) {
++      csi_report->csi_meas_bitlen.cri_bitlen = 0;  // CRI not included in RTD format
++      csi_report->csi_meas_bitlen.ri_bitlen = 2;   // Fixed 2 bits for RI (4 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[0] = 4; // Fixed 4 bits for CQI (16 candidates)
++      csi_report->csi_meas_bitlen.cqi_bitlen[1] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[2] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[3] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[4] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[5] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[6] = 4;
++      csi_report->csi_meas_bitlen.cqi_bitlen[7] = 4;
++      // PMI bitlen: PMI_i11 = 4 bits, PMI_i2 = 2 bits (total 6 bits)
++      // Note: pmi_x1_bitlen corresponds to PMI_i11, pmi_x2_bitlen corresponds to PMI_i2
++      for (int i = 0; i < 8; i++) {
++        csi_report->csi_meas_bitlen.pmi_x1_bitlen[i] = 4;  // PMI_i11: 4 bits (16 candidates)
++        csi_report->csi_meas_bitlen.pmi_x2_bitlen[i] = 2;  // PMI_i2: 2 bits (4 candidates)
++        csi_report->csi_meas_bitlen.li_bitlen[i] = 0;      // LI not in RTD format
++      }
++      LOG_D(NR_MAC, "[RTD_TEST_MODE] Forced CSI bitlen: CRI=0, RI=2, PMI_i11=4, PMI_i2=2, CQI=4, Total=13 bits\n");
++    }
++#endif
+   }
+ }
+ 
+ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+ {
++#ifdef FORCE_RTD_CSI_BITMAP
++  // RTD Test Mode: Force fixed 13-bit format
++  // Format: RI(2) | PMI_i11(4) | PMI_i2(2) | CQI(4) | PAD(1) = 13 bits
++  // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
++  LOG_D(NR_MAC, "[RTD_TEST_MODE] Forcing CSI Part-1 bitlen to 13 bits\n");
++  return 13;
++#else
+   uint16_t csi_bitlen = 0;
+   uint16_t max_bitlen = 0;
+   L1_Meas_bitlen_t *CSI_report_bitlen = NULL;
+@@ -4825,6 +4858,7 @@ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
+     csi_bitlen += max_bitlen;
+   }
+   return csi_bitlen;
++#endif
+ }
+ 
+ bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, long *support_90mhz)
