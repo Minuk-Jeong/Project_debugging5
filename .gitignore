@@ -1,3 +1,17 @@
+
+# OAI (explicit)
+openairinterface5g/cmake_targets/
+openairinterface5g/**/cmake_targets/
+openairinterface5g/**/build/
+openairinterface5g/**/*.o
+openairinterface5g/**/*.a
+openairinterface5g/**/*.so
+openairinterface5g/**/*.so.*
+openairinterface5g/**/*.log
+openairinterface5g/cmake_targets/ran_build/build/nr-softmodem
+openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem
+openairinterface5g/cmake_targets/ran_build/build/lte-softmodem
+
 # OAI builds / artifacts
 cmake_targets/
 **/cmake_targets/
