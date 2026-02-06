@@ -2,7 +2,7 @@
 
 ## 문제 원인
 
-원본 프로젝트(Project_CSIplusMatlab)에서는 `liboai_device.so`, `liboai_usrpdevif.so`, `liboai_iqplayer.so`가 빌드 산출물로 존재하지만, 복사본 프로젝트(Project_CSIplusMatlab_13bit)에서는 `-w SIMU` 옵션만 사용하여 빌드했기 때문에 USRP 라이브러리가 빌드되지 않았습니다.
+원본 프로젝트(Project_CSIplusMatlab)에서는 `liboai_device.so`, `liboai_usrpdevif.so`, `liboai_iqplayer.so`가 빌드 산출물로 존재하지만, 복사본 프로젝트에서는 `-w SIMU` 옵션만 사용하여 빌드했기 때문에 USRP 라이브러리가 빌드되지 않았습니다.
 
 **원인:**
 - `OAI_USRP:BOOL=OFF`로 설정되어 USRP 드라이버가 빌드되지 않음
@@ -13,14 +13,15 @@
 ### 방법 1: 빌드 스크립트 사용 (권장)
 
 ```bash
-cd /home/lab/바탕화면/Project_CSIplusMatlab_13bit/openairinterface5g
+# 프로젝트 루트 디렉토리에서 실행 (경로 자동 감지)
 ./build_with_usrp.sh
 ```
 
 ### 방법 2: 수동 빌드
 
 ```bash
-cd /home/lab/바탕화면/Project_CSIplusMatlab_13bit/openairinterface5g
+# 프로젝트 루트 디렉토리로 이동
+cd "$(dirname "$0")"  # 또는 실제 프로젝트 경로로 이동
 
 # Step 1: 빌드 디렉토리 정리
 rm -rf cmake_targets/ran_build/build
@@ -36,7 +37,7 @@ find cmake_targets/ran_build/build -maxdepth 1 -name "liboai_device.so" -o -name
 
 1. **필수 라이브러리 파일 존재 확인:**
    ```bash
-   cd /home/lab/바탕화면/Project_CSIplusMatlab_13bit/openairinterface5g/cmake_targets/ran_build/build
+   cd cmake_targets/ran_build/build
    ls -lh liboai*.so
    ```
    
@@ -62,7 +63,7 @@ find cmake_targets/ran_build/build -maxdepth 1 -name "liboai_device.so" -o -name
 빌드 디렉토리에서 다음 명령어로 실행 (추가 환경변수 불필요):
 
 ```bash
-cd /home/lab/바탕화면/Project_CSIplusMatlab_13bit/openairinterface5g/cmake_targets/ran_build/build
+cd cmake_targets/ran_build/build
 sudo ./nr-uesoftmodem --usrp-args "addr=192.168.20.2,clock_source=internal,time_source=internal" \
   -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/nrue.uicc.conf \
   -C 3609120000 -r 51 --numerology 1 --ssb 234 --ue-nb-ant-rx 4 --ue-nb-ant-tx 1

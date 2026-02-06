@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
+#include <stdlib.h>
 #ifdef RTD_MATCH_LOG
 #include <stdint.h>
 #endif
@@ -85,6 +86,24 @@ const uint16_t table_7_2_1[16] = {
     960,  // row index 12
     1920, // row index 13
 };
+
+// CSI Statistics: 1000-slot window statistics
+#define CSI_STAT_WINDOW_SIZE 1000
+#define CSI_STAT_ONNX_TIMES_MAX 1000
+
+typedef struct {
+  uint32_t sent;                    // Number of CSI reports actually sent
+  uint32_t skip_period;             // Skipped due to report period mismatch
+  uint32_t skip_not_ready;          // Skipped due to ONNX_NOT_READY
+  uint32_t deadline_miss;            // Number of deadline misses
+  uint64_t onnx_times[CSI_STAT_ONNX_TIMES_MAX];  // ONNX inference times (us)
+  uint32_t onnx_count;              // Number of ONNX inference samples
+  uint32_t window_start_abs_slot;   // Start of current 1000-slot window
+  time_t last_print_time;           // Last print time (seconds)
+} csi_stat_t;
+
+// Global CSI statistics (shared between PHY and MAC)
+csi_stat_t g_csi_stat = {0};
 
 typedef struct {
   uint32_t ssb_index;
@@ -1809,22 +1828,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                                                      2,
                                                      pucchres->format.choice.format2->nrofSymbols,
                                                      8);
-        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
-        // Calculate offsets for RTD parsing
-        int csi_offset = pucch->n_harq + pucch->n_sr;  // CSI starts after ACK and SR
-        int total_bits = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-        int csi_msb = total_bits - 1;
-        int csi_lsb = total_bits - pucch->n_csi;
-        
-        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format2 Payload Assembly:\n");
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
-              pucch->n_harq, pucch->n_sr, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Shift offsets: CSI << %d, SR << %d\n", csi_offset, pucch->n_harq);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position in final payload: bits [%d:%d] (offset=%d)\n", 
-              csi_msb, csi_lsb, csi_offset);
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
 #ifdef RTD_MATCH_LOG
         // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
@@ -1934,27 +1937,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
           }
         }
 #endif
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", pucch_pdu->payload);
-        // Print bit string for entire payload
-        char pucch_bit_str[128] = {0};
-        int total_bits_log = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-        for (int i = total_bits_log - 1; i >= 0; i--) {
-          pucch_bit_str[total_bits_log - 1 - i] = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-        }
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload (binary, MSB→LSB, %d bits): %s\n", total_bits_log, pucch_bit_str);
-        // Extract and print CSI bits only (for RTD parsing)
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI bits in final payload (bits [%d:%d], offset=%d): ", 
-              csi_msb, csi_lsb, csi_offset);
-        char csi_bit_str[14] = {0};
-        for (int i = csi_msb; i >= csi_lsb; i--) {
-          char bit_char = ((pucch_pdu->payload >> i) & 1) ? '1' : '0';
-          csi_bit_str[csi_msb - i] = bit_char;
-          LOG_I(NR_MAC, "%c", bit_char);
-        }
-        LOG_I(NR_MAC, "\n");
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only binary string (for RTD): %s\n", csi_bit_str);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
-              (pucch_pdu->payload >> csi_offset) & ((1UL << pucch->n_csi) - 1));
         break;
       case NR_PUCCH_Resource__format_PR_format3 :
         pucch_pdu->format_type = 3;
@@ -1989,21 +1971,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                                                      2 - pucch_pdu->pi_2bpsk,
                                                      pucchres->format.choice.format3->nrofSymbols - f3_dmrs_symbols,
                                                      12);
-        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
-        int csi_offset_f3 = pucch->n_harq + pucch->n_sr;
-        int total_bits_f3 = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-        uint64_t final_payload_f3 = (pucch->csi_part1_payload << csi_offset_f3) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
-        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format3 Payload Assembly:\n");
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
-              pucch->n_harq, pucch->n_sr, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position: bits [%d:%d] (offset=%d)\n", 
-              total_bits_f3 - 1, total_bits_f3 - pucch->n_csi, csi_offset_f3);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", final_payload_f3);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
-              (final_payload_f3 >> csi_offset_f3) & ((1UL << pucch->n_csi) - 1));
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
 #ifdef RTD_MATCH_LOG
         // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
@@ -2130,21 +2097,6 @@ int nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
           pucch_pdu->pi_2bpsk = pucchfmt->pi2BPSK!= NULL ?  1 : 0;
           pucch_pdu->add_dmrs_flag = pucchfmt->additionalDMRS!= NULL ?  1 : 0;
         }
-        // RTD Test Mode: Log final PUCCH payload before encoding (using INFO level)
-        int csi_offset_f4 = pucch->n_harq + pucch->n_sr;
-        int total_bits_f4 = pucch->n_csi + pucch->n_harq + pucch->n_sr;
-        uint64_t final_payload_f4 = (pucch->csi_part1_payload << csi_offset_f4) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
-        LOG_I(NR_MAC, "[RTD_TEST_MODE] PUCCH Format4 Payload Assembly:\n");
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Component sizes: ACK=%d bits, SR=%d bits, CSI=%d bits\n", 
-              pucch->n_harq, pucch->n_sr, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI Part-1: 0x%lx (%d bits)\n", pucch->csi_part1_payload, pucch->n_csi);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   SR: 0x%lx (%d bits)\n", pucch->sr_payload, pucch->n_sr);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ACK: 0x%lx (%d bits)\n", pucch->ack_payload, pucch->n_harq);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI position: bits [%d:%d] (offset=%d)\n", 
-              total_bits_f4 - 1, total_bits_f4 - pucch->n_csi, csi_offset_f4);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final PUCCH payload: 0x%lx\n", final_payload_f4);
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   CSI-only hex (extracted): 0x%lx\n", 
-              (final_payload_f4 >> csi_offset_f4) & ((1UL << pucch->n_csi) - 1));
         pucch_pdu->payload = (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
 #ifdef RTD_MATCH_LOG
         // RTD_MATCH: Log final PUCCH payload assembly with timestamp and frame/slot info
@@ -3135,6 +3087,86 @@ int compute_csi_priority(NR_UE_MAC_INST_t *mac, NR_CSI_ReportConfig_t *csirep)
   return 2 * Ncells * Ms * y + Ncells * Ms * k + Ms * c + s;
 }
 
+// Helper function to calculate percentile
+static uint64_t calc_percentile(uint64_t *arr, uint32_t count, int percentile) {
+  if (count == 0) return 0;
+  
+  // Create a copy and sort
+  uint64_t *sorted = (uint64_t *)malloc(count * sizeof(uint64_t));
+  if (!sorted) return 0;
+  
+  for (uint32_t i = 0; i < count; i++) {
+    sorted[i] = arr[i];
+  }
+  
+  // Simple bubble sort (for small arrays)
+  for (uint32_t i = 0; i < count - 1; i++) {
+    for (uint32_t j = 0; j < count - i - 1; j++) {
+      if (sorted[j] > sorted[j + 1]) {
+        uint64_t tmp = sorted[j];
+        sorted[j] = sorted[j + 1];
+        sorted[j + 1] = tmp;
+      }
+    }
+  }
+  
+  uint32_t index = (count * percentile) / 100;
+  if (index >= count) index = count - 1;
+  uint64_t result = sorted[index];
+  free(sorted);
+  return result;
+}
+
+// Print CSI statistics every 1 second
+static void print_csi_statistics(uint32_t abs_slot) {
+  time_t current_time = time(NULL);
+  
+  // Check if 1 second has passed since last print
+  if (g_csi_stat.last_print_time == 0 || current_time > g_csi_stat.last_print_time) {
+    // Check if we have a full 1000-slot window
+    if (g_csi_stat.window_start_abs_slot == 0) {
+      g_csi_stat.window_start_abs_slot = abs_slot;
+    }
+    
+    // Calculate average ONNX time
+    uint64_t onnx_avg_us = 0;
+    if (g_csi_stat.onnx_count > 0) {
+      uint64_t sum = 0;
+      for (uint32_t i = 0; i < g_csi_stat.onnx_count && i < CSI_STAT_ONNX_TIMES_MAX; i++) {
+        sum += g_csi_stat.onnx_times[i];
+      }
+      onnx_avg_us = sum / g_csi_stat.onnx_count;
+    }
+    
+    // Calculate 95th percentile ONNX time
+    uint64_t onnx_p95_us = 0;
+    if (g_csi_stat.onnx_count > 0) {
+      onnx_p95_us = calc_percentile(g_csi_stat.onnx_times, 
+                                     (g_csi_stat.onnx_count < CSI_STAT_ONNX_TIMES_MAX) ? 
+                                     g_csi_stat.onnx_count : CSI_STAT_ONNX_TIMES_MAX, 
+                                     95);
+    }
+    
+    // Print statistics
+    // Format: abs=[N-999..N] where N is the current abs_slot
+    uint32_t window_start = (abs_slot >= CSI_STAT_WINDOW_SIZE - 1) ? (abs_slot - (CSI_STAT_WINDOW_SIZE - 1)) : 0;
+    uint32_t window_end = abs_slot;
+    LOG_I(NR_MAC, "[CSI-STAT] last1000 abs=[%u..%u] sent=%u skip_period=%u skip_not_ready=%u deadline_miss=%u onnx_avg_us=%llu onnx_p95_us=%llu\n",
+          window_start, window_end,
+          g_csi_stat.sent, g_csi_stat.skip_period, g_csi_stat.skip_not_ready, 
+          g_csi_stat.deadline_miss, (unsigned long long)onnx_avg_us, (unsigned long long)onnx_p95_us);
+    
+    // Reset statistics for next window
+    g_csi_stat.sent = 0;
+    g_csi_stat.skip_period = 0;
+    g_csi_stat.skip_not_ready = 0;
+    g_csi_stat.deadline_miss = 0;
+    g_csi_stat.onnx_count = 0;
+    g_csi_stat.window_start_abs_slot = abs_slot;
+    g_csi_stat.last_print_time = current_time;
+  }
+}
+
 int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sched_t *pucch)
 {
   NR_UE_UL_BWP_t *current_UL_BWP = mac->current_UL_BWP;
@@ -3152,7 +3184,23 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
         int period, offset;
         csi_period_offset(csirep, NULL, &period, &offset);
         const int n_slots_frame = mac->frame_structure.numb_slots_frame;
-        if (((n_slots_frame*frame + slot - offset)%period) == 0 && pucch_Config) {
+        // Static counter for CSI report sequence (shared across all CSI reports)
+        static uint32_t csi_seq_counter = 0;
+        
+        // Check if report period matches
+        bool period_matches = ((n_slots_frame*frame + slot - offset)%period) == 0;
+        
+        if (!period_matches) {
+          // Log skip reason: report period doesn't match
+          uint32_t abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+          LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d SKIP reason=REPORT_PERIOD\n", abs_slot, frame, slot);
+          g_csi_stat.skip_period++;
+          print_csi_statistics(abs_slot);
+        } else if (!pucch_Config) {
+          // Log skip reason: PUCCH config not available
+          uint32_t abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+          LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d SKIP reason=PUCCH_CONFIG_MISSING\n", abs_slot, frame, slot);
+        } else if (period_matches && pucch_Config) {
           int csi_res_id = -1;
           for (int i = 0; i < csirep->reportConfigType.choice.periodic->pucch_CSI_ResourceList.list.count; i++) {
             const NR_PUCCH_CSI_Resource_t *pucchcsires =
@@ -3164,6 +3212,8 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
           }
           if (csi_res_id < 0) {
             // This CSI Report ID is not associated with current active BWP
+            uint32_t abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+            LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d SKIP reason=BWP_MISMATCH\n", abs_slot, frame, slot);
             continue;
           }
           NR_PUCCH_Resource_t *csi_pucch = find_pucch_resource_from_list(pucch_Config->resourceToAddModList, csi_res_id);
@@ -3179,6 +3229,29 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
               csi_priority = temp_priority;
               num_csi = 1;
               csi_payload_t csi = nr_get_csi_payload(mac, csi_report_id, WIDEBAND_ON_PUCCH, csi_measconfig);
+              
+              // Log CSI payload generation timing with report sequence
+              uint32_t abs_slot = 0;
+              int n_slots_frame = mac->frame_structure.numb_slots_frame;
+              {
+                csi_seq_counter++;
+                
+                struct timespec ts;
+                if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == 0) {
+                  uint64_t t_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+                  abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+                  int total_bits = csi.p1_bits + csi.p2_bits;
+                  
+                  LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d csi_seq=%u bits=%d payload=0x%lx t_us=%llu\n",
+                        abs_slot, frame, slot, csi_seq_counter, total_bits, 
+                        csi.part1_payload, (unsigned long long)t_us);
+                }
+              }
+              
+              // Update statistics: CSI report sent
+              g_csi_stat.sent++;
+              print_csi_statistics(abs_slot);
+              
               pucch->n_csi = csi.p1_bits;
               pucch->csi_part1_payload = csi.part1_payload;
               pucch->pucch_resource = csi_pucch;
@@ -3212,22 +3285,42 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
                   LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d repCfg=%d csiBits=%d payload=0x%lx bitsMSB=%s bitsLSB=%s\n",
                         wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, csi_res_id, csi_report_id, 
                         csi.p1_bits, csi.part1_payload, bits_msb, bits_lsb);
-                  
-                  // Detailed log (optional, for debugging)
-#ifdef RTD_TEST_MODE
-                  LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] RI=%d i1=%d i2=%d CQI=%d PAD=%d part1_bits=%d part2_bits=%d\n",
-                        mac->csirs_measurements.ri, mac->csirs_measurements.i1, 
-                        mac->csirs_measurements.i2, mac->csirs_measurements.cqi, 0, csi.p1_bits, csi.p2_bits);
-#endif
                 }
               }
 #endif
-            } else
+            } else {
+              // Log skip reason: lower priority (another CSI report has higher priority)
+              uint32_t abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+              LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d SKIP reason=LOWER_PRIORITY\n", abs_slot, frame, slot);
               continue;
+            }
           } else {
             num_csi = 1;
             csi_priority = temp_priority;
             csi_payload_t csi = nr_get_csi_payload(mac, csi_report_id, WIDEBAND_ON_PUCCH, csi_measconfig);
+            
+            // Log CSI payload generation timing with report sequence
+            uint32_t abs_slot = 0;
+            int n_slots_frame = mac->frame_structure.numb_slots_frame;
+            {
+              csi_seq_counter++;
+              
+              struct timespec ts;
+              if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == 0) {
+                uint64_t t_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+                abs_slot = (uint32_t)(frame * n_slots_frame + slot);
+                int total_bits = csi.p1_bits + csi.p2_bits;
+                
+                LOG_I(NR_MAC, "[UCI-CSI] abs=%u f=%d s=%d csi_seq=%u bits=%d payload=0x%lx t_us=%llu\n",
+                      abs_slot, frame, slot, csi_seq_counter, total_bits, 
+                      csi.part1_payload, (unsigned long long)t_us);
+              }
+            }
+            
+            // Update statistics: CSI report sent
+            g_csi_stat.sent++;
+            print_csi_statistics(abs_slot);
+            
             pucch->n_csi = csi.p1_bits;
             pucch->csi_part1_payload = csi.part1_payload;
             pucch->pucch_resource = csi_pucch;
@@ -3261,13 +3354,6 @@ int nr_get_csi_measurements(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCC
                 LOG_I(NR_MAC, "[RTD_MATCH] time=%s ts_us=%llu frame=%d slot=%d subframe=%d numerology=%d rnti=%d pucchRes=%d repCfg=%d csiBits=%d payload=0x%lx bitsMSB=%s bitsLSB=%s\n",
                       wall, (unsigned long long)ts_us, frame, slot, subframe, numerology, rnti, csi_res_id, csi_report_id, 
                       csi.p1_bits, csi.part1_payload, bits_msb, bits_lsb);
-                
-                // Detailed log (optional, for debugging)
-#ifdef RTD_TEST_MODE
-                LOG_I(NR_MAC, "[RTD_MATCH_DETAIL] RI=%d i1=%d i2=%d CQI=%d PAD=%d part1_bits=%d part2_bits=%d\n",
-                      mac->csirs_measurements.ri, mac->csirs_measurements.i1, 
-                      mac->csirs_measurements.i2, mac->csirs_measurements.cqi, 0, csi.p1_bits, csi.p2_bits);
-#endif
               }
             }
 #endif
@@ -3543,75 +3629,6 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
   uint64_t temp_payload_2 = 0;
   AssertFatal(mapping_type != SUBBAND_ON_PUCCH, "CSI mapping for subband PMI and CQI not implemented\n");
 
-  // RTD Test Mode: Configuration-based sanity check
-  // Verify that the configuration matches RTD expectations
-  static bool rtd_sanity_check_done = false;
-  if (!rtd_sanity_check_done) {
-    bool config_ok = true;
-    LOG_I(NR_MAC, "[RTD_TEST_MODE] Configuration Sanity Check:\n");
-    
-    // Check reportQuantity
-    if (csi_reportconfig->reportQuantity.present != NR_CSI_ReportConfig__reportQuantity_PR_cri_RI_PMI_CQI) {
-      LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: reportQuantity is not cri_RI_PMI_CQI (got %d)\n", 
-            csi_reportconfig->reportQuantity.present);
-      config_ok = false;
-    } else {
-      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ reportQuantity: cri_RI_PMI_CQI\n");
-    }
-    
-    // Check reportConfigType (should be periodic for PUCCH)
-    if (csi_reportconfig->reportConfigType.present != NR_CSI_ReportConfig__reportConfigType_PR_periodic) {
-      LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: reportConfigType is not periodic (got %d)\n", 
-            csi_reportconfig->reportConfigType.present);
-      config_ok = false;
-    } else {
-      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ reportConfigType: periodic\n");
-    }
-    
-    // Check CRI bitlen (should be 0 for single resource)
-    nr_csi_report_t *csi_report_check = NULL;
-    for (int i = 0; i < MAX_CSI_REPORTCONFIG; i++) {
-      if (mac->csi_report_template[i].reportConfigId == csi_reportconfig->reportConfigId) {
-        csi_report_check = &mac->csi_report_template[i];
-        break;
-      }
-    }
-    if (csi_report_check) {
-      if (csi_report_check->csi_meas_bitlen.cri_bitlen != 0) {
-        LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: CRI bitlen is %d (expected 0 for RTD format)\n", 
-              csi_report_check->csi_meas_bitlen.cri_bitlen);
-        config_ok = false;
-      } else {
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ CRI bitlen: 0 (single resource)\n");
-      }
-      
-      // Check RI bitlen (should be 2 in RTD mode)
-      if (csi_report_check->csi_meas_bitlen.ri_bitlen != 2) {
-        LOG_W(NR_MAC, "[RTD_TEST_MODE]   WARNING: RI bitlen is %d (expected 2 in RTD mode)\n", 
-              csi_report_check->csi_meas_bitlen.ri_bitlen);
-      } else {
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ RI bitlen: 2\n");
-      }
-    }
-    
-    // Check PUCCH resource (if available in config)
-    if (csi_reportconfig->reportConfigType.present == NR_CSI_ReportConfig__reportConfigType_PR_periodic) {
-      if (csi_reportconfig->reportConfigType.choice.periodic && 
-          csi_reportconfig->reportConfigType.choice.periodic->pucch_CSI_ResourceList.list.count > 0) {
-        LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ PUCCH CSI Resource List: %d entries\n", 
-              csi_reportconfig->reportConfigType.choice.periodic->pucch_CSI_ResourceList.list.count);
-        // Note: PUCCH resource format verification would require access to PUCCH config,
-        // which is not directly available here. This is logged for reference.
-      }
-    }
-    
-    if (config_ok) {
-      LOG_I(NR_MAC, "[RTD_TEST_MODE]   ✓ Configuration check PASSED\n");
-    } else {
-      LOG_W(NR_MAC, "[RTD_TEST_MODE]   ⚠ Configuration check found warnings (RTD mode may not work correctly)\n");
-    }
-    rtd_sanity_check_done = true;
-  }
 
   for (int csi_resourceidx = 0; csi_resourceidx < csi_MeasConfig->csi_ResourceConfigToAddModList->list.count; csi_resourceidx++) {
 
@@ -3651,107 +3668,46 @@ static csi_payload_t get_csirs_RI_PMI_CQI_payload(NR_UE_MAC_INST_t *mac,
                              mac->csirs_measurements.i2;
           }
           else {
-            // PUCCH mode: RTD fixed format
-            // RTD Test Mode: Force fixed 15-bit format matching RTD decoder expectations
-            // Format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(4) | CQI(4) | PAD(1) = 15 bits
-            // This is a test mode to validate RTD decoder assumptions, NOT for standard compliance
-            p1_bits = 15;  // Fixed: RI(2) + PMI_i11(4) + PMI_i2(4) + CQI(4) + PAD(1)
+            // PUCCH mode: RTD format
+            // Both rank=1 and rank=2 use 11 bits: RI(2) | PMI_i11(3) | PMI_i13(1) | PMI_i2(1) | CQI(4) = 11 bits
+            // For rank=1, PMI_i13 is hardcoded to 0
+            p1_bits = 11;  // Fixed: 11 bits for both rank=1 and rank=2
             p2_bits = 0;   // Part-2 not used in RTD format
             
             // ===== RI Encoding =====
             // OAI stores RI as 0-based (0=rank1, 1=rank2, 2=rank3, 3=rank4)
-            // RTD may expect either rank value (1-4) or rank-1 (0-3)
             uint8_t ri_raw = mac->csirs_measurements.ri;  // 0-based rank index
-            uint8_t ri_val;
-#ifdef FORCE_RTD_RI_ENC_RANK
-            // RTD expects rank value (1-4)
-            ri_val = (ri_raw + 1) & 0x3;  // Convert to rank (1-4), then mask to 2 bits
-            // Note: rank 4 would be encoded as 0, but should be 3 (max for 2 bits)
-            if (ri_raw >= 3) ri_val = 3;  // Cap at 3 (rank 4 → encoded as 3)
-#else
-            // Default: RTD expects rank-1 (0-3), which matches OAI's 0-based storage
-            ri_val = ri_raw & 0x3;  // RI: 2 bits (mask to 4 candidates: 0,1,2,3)
-#endif
+            uint8_t ri_val = ri_raw & 0x3;  // RI: 2 bits (mask to 4 candidates: 0,1,2,3)
+            bool is_rank1 = (ri_raw == 0);  // rank=1 when ri_raw=0
             
             // ===== PMI Encoding =====
-            // OAI stores i1 as combined value (may include i11, i12, i13)
-            // RTD expects i11 (4 bits) and i2 (4 bits) - i2 is now 4 bits instead of 2 bits
-            uint8_t pmi_i11_val;
-            uint8_t pmi_i2_val;
-#ifdef FORCE_RTD_PMI_ZERO
-            // Force zero mode (for decoder boundary validation)
-            pmi_i11_val = 0;
-            pmi_i2_val = 0;
-#else
-            // Default: Use calculated values directly (no truncation)
-            // Extract lower 4 bits of i1 as i11 (RTD assumes i11 is 4 bits)
-            pmi_i11_val = mac->csirs_measurements.i1 & 0xF;  // PMI_i11: 4 bits (mask to 16 candidates)
-            // Use i2 value directly as 4 bits (no truncation from 2 bits)
-            pmi_i2_val = mac->csirs_measurements.i2 & 0xF;  // PMI_i2: 4 bits (mask to 16 candidates)
-#endif
+            // i1 is encoded as: i11 (lower 3 bits) | i13 (bit 3)
+            // Extract i11: 3 bits (0-7)
+            uint8_t pmi_i11_val = mac->csirs_measurements.i1 & 0x7;  // PMI_i11: 3 bits (mask to 8 candidates: 0-7)
+            // Extract i13: 1 bit (0-1) from bit 3
+            // For rank=1, i13 is hardcoded to 0 in the report (but PMI logic still uses i13=0)
+            uint8_t pmi_i13_val = is_rank1 ? 0 : ((mac->csirs_measurements.i1 >> 3) & 0x1);  // PMI_i13: 1 bit (0 for rank=1, actual value for rank=2)
+            // Extract i2: 1 bit (0-1)
+            uint8_t pmi_i2_val = mac->csirs_measurements.i2 & 0x1;   // PMI_i2: 1 bit (mask to 2 candidates: 0-1)
             
             // ===== CQI Encoding =====
             uint8_t cqi_val = mac->csirs_measurements.cqi & 0xF;  // CQI: 4 bits (mask to 16 candidates)
             
-            // ===== Padding =====
-            uint8_t pad_val = 0;  // Padding: 1 bit, fixed to 0
-            
             // ===== Payload Packing =====
-            // Pack in RTD format (MSB → LSB): RI(2) | PMI_i11(4) | PMI_i2(4) | CQI(4) | PAD(1)
-            temp_payload_1 = ((uint64_t)ri_val << 13) |      // RI at bits [14:13]
-                             ((uint64_t)pmi_i11_val << 9) |  // PMI_i11 at bits [12:9]
-                             ((uint64_t)pmi_i2_val << 5) |   // PMI_i2 at bits [8:5]
-                             ((uint64_t)cqi_val << 1) |      // CQI at bits [4:1]
-                             ((uint64_t)pad_val);            // PAD at bit [0]
+            // Pack in format (MSB → LSB): RI(2) | PMI_i11(3) | PMI_i13(1) | PMI_i2(1) | CQI(4)
+            temp_payload_1 = ((uint64_t)ri_val << 9) |          // RI at bits [10:9]
+                             ((uint64_t)pmi_i11_val << 6) |    // PMI_i11 at bits [8:6]
+                             ((uint64_t)pmi_i13_val << 5) |    // PMI_i13 at bit [5] (0 for rank=1, actual value for rank=2)
+                             ((uint64_t)pmi_i2_val << 4) |      // PMI_i2 at bit [4]
+                             ((uint64_t)cqi_val);              // CQI at bits [3:0]
             
             temp_payload_2 = 0;
             
             // ===== Bit Order Handling =====
-#ifdef FORCE_RTD_WITH_REVERSE
-            // Apply reverse_bits (if RTD expects reversed order)
+            // gNB가 거꾸로 받으므로 비트 반전 적용
             temp_payload_1 = reverse_bits(temp_payload_1, p1_bits);
             temp_payload_2 = reverse_bits(temp_payload_2, p2_bits);
-#endif
-            // Default: NO reverse_bits (RTD expects direct bit order)
-            
-            // ===== Detailed Logging =====
-            LOG_I(NR_MAC, "[RTD_TEST_MODE] CSI Part-1 Payload (15 bits fixed format):\n");
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original RI (0-based) = %d, Encoded RI (2 bits) = %d (0x%x)\n", 
-                  ri_raw, ri_val, ri_val);
-#ifdef FORCE_RTD_RI_ENC_RANK
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK (1-4)\n");
-#else
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   RI encoding mode: RANK_MINUS1 (0-3)\n");
-#endif
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i1 = %d, Encoded PMI_i11 (4 bits) = %d (0x%x)\n", 
-                  mac->csirs_measurements.i1, pmi_i11_val, pmi_i11_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Original i2 = %d, Encoded PMI_i2 (4 bits) = %d (0x%x)\n", 
-                  mac->csirs_measurements.i2, pmi_i2_val, pmi_i2_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   CQI (4 bits) = %d (0x%x)\n", cqi_val, cqi_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   PAD (1 bit) = %d\n", pad_val);
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (hex) = 0x%lx\n", temp_payload_1);
-            // Print bit string representation
-            char bit_str[16] = {0};
-            for (int i = 14; i >= 0; i--) {
-              bit_str[14-i] = ((temp_payload_1 >> i) & 1) ? '1' : '0';
-            }
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Final payload (binary) = %s (MSB→LSB)\n", bit_str);
-#ifdef FORCE_RTD_WITH_REVERSE
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: WITH reverse_bits applied\n");
-#else
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   Bit order: NO reverse_bits applied (RTD direct format)\n");
-#endif
-            LOG_I(NR_MAC, "[RTD_TEST_MODE]   part1_bits = %d, part2_bits = %d\n", p1_bits, p2_bits);
           }
-          LOG_D(NR_MAC, "cri_bitlen = %d\n", cri_bitlen);
-          LOG_D(NR_MAC, "ri_bitlen = %d\n", ri_bitlen);
-          LOG_D(NR_MAC, "pmi_x1_bitlen = %d\n", pmi_x1_bitlen);
-          LOG_D(NR_MAC, "pmi_x2_bitlen = %d\n", pmi_x2_bitlen);
-          LOG_D(NR_MAC, "cqi_bitlen = %d\n", cqi_bitlen);
-          LOG_D(NR_MAC, "csi_part1_payload = 0x%lx\n", temp_payload_1);
-          LOG_D(NR_MAC, "csi_part2_payload = 0x%lx\n", temp_payload_2);
-          LOG_D(NR_MAC, "part1_bits = %d\n", p1_bits);
-          LOG_D(NR_MAC, "part2_bits = %d\n", p2_bits);
           break;
         }
       }

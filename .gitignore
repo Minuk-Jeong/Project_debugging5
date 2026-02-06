@@ -1,16 +1,27 @@
+# OAI builds / artifacts
 cmake_targets/
+**/cmake_targets/
 build/
-*/build/
-*.o
-*.a
-*.so
-*.log
+**/build/
+**/*.o
+**/*.a
+**/*.so
+**/*.so.*
+**/*.log
+
+# Runtime artifacts
+*.pcap
+*.pcapng
+*.bin
+*.tmp
+*.swp
+
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+# IDE/OS
 .vscode/
 .idea/
 .DS_Store
-
-# OAI build artifacts
-openairinterface5g/cmake_targets/ran_build/build/
-openairinterface5g/cmake_targets/ran_build/build/**

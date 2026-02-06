@@ -4,7 +4,9 @@
 
 set -e
 
-PROJECT_ROOT="/home/lab/바탕화면/Project_CSIplusMatlab_13bit/openairinterface5g"
+# 스크립트 위치를 기준으로 프로젝트 루트 자동 감지
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
 cd "$PROJECT_ROOT"
 
 echo "=========================================="

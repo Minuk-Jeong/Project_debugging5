@@ -117,15 +117,24 @@ int init_dl_csi_onnx(const char *model_path, int64_t T, int64_t D)
 #endif
 }
 
+
 int run_dl_csi_onnx(const float *input, float *output)
 {
-  if (g_inited != 1) return -1;
+  if (g_inited != 1) {
+  LOG_E(NR_PHY, "[ONNX] run called but g_inited=%d (init not done/failed)\n", g_inited);
+  return -1;
+}
+
   if (!input || !output) return -2;
 
   const int64_t N = gT * gD;      // 입력 크기
   const int64_t N_out = gD;       // 출력 크기 (sequence-to-one 모델)
 
   // test mode (identity/zero)
+  LOG_I(NR_PHY, "[ONNX] gT=%" PRId64 " gD=%" PRId64 "\n", gT, gD);
+  LOG_I(NR_PHY, "[ONNX] input_name=%s\n", in_name);
+  LOG_I(NR_PHY, "[ONNX] output_name=%s\n", out_name);
+
   if (g_use_test_mode) {
     if (!strcmp(g_test_mode, "identity")) {
       // 입력의 마지막 타임스텝만 복사
